@@ -1,0 +1,57 @@
+# DJI Avata 2 — configuración de cámara para DroneReel-AI.
+#
+# ESTADO: SIN VERIFICAR CON CLIPS REALES. Las reglas de identificación están
+# marcadas "verified: false", así que nunca se usan para decidir el color: solo
+# aparecen como pista. Mientras tanto el perfil se confirma a mano:
+#     python -m dronereel probe VIDEO.MP4 --camera avata2 --profile dlog_m
+#
+# Perfiles: según la información pública de DJI, el Avata 2 graba en Normal y
+# en D-Log M (no D-Log). Es una hipótesis hasta comprobarla con tus archivos.
+
+camera: avata2
+name: DJI Avata 2
+
+# Cómo reconocer la cámara por los metadatos. Se rellenará con los tags reales
+# (ffprobe) cuando haya clips de muestra; luego verified: true.
+identify:
+  verified: false
+  tags: {}
+
+color_profiles:
+  normal:
+    transform: none          # ya está en Rec.709: no se toca el color
+
+  dlog_m:
+    transform: lut
+    # LUT oficial de DJI "D-Log M a Rec.709" PARA AVATA 2 (descarga de dji.com).
+    # Ruta al archivo .cube; vacía = no se puede aplicar color todavía.
+    lut: null
+    output: rec709
+    identify:
+      verified: false        # DJI escribe "color_md : dlog_m" en el .SRT de
+      srt_color_md: [dlog_m] # otros modelos; falta confirmarlo en el Avata 2
+
+# Resoluciones y fps: informativo, se completará con los clips reales.
+recording:
+  resolutions: []
+  fps: []
+
+# Ajustes de color (fase F5). Valores neutros = sin cambio.
+color:
+  exposure_ev: 0.0
+  contrast: 1.0
+  saturation: 1.0
+  wb_temperature: 0
+  wb_tint: 0
+  highlight_protection: 0.0
+
+# Exportación (fase F4). Los parámetros x265 limitan la RAM: con los valores
+# por defecto de x265, la codificación 4K se quedó sin memoria en esta Pi.
+export:
+  codec: hevc
+  bit_depth: 10
+  crf: 18
+  preset: medium
+  x265_params: "frame-threads=1:rc-lookahead=10"
+  audio: copy
+  container: mp4

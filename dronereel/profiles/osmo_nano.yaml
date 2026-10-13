@@ -1,0 +1,39 @@
+# DJI Osmo Nano — configuración de cámara para DroneReel-AI.
+#
+# ESTADO: SIN VERIFICAR CON CLIPS REALES. No sé con certeza qué perfiles de
+# color ofrece esta cámara, así que de momento solo está "normal" (sin
+# transformación). Un perfil logarítmico se añadirá aquí, con la LUT oficial
+# de DJI para ESTA cámara, cuando se confirme con tus archivos. Nunca se
+# reutiliza la LUT del Avata 2.
+
+camera: osmo_nano
+name: DJI Osmo Nano
+
+identify:
+  verified: false
+  tags: {}
+
+color_profiles:
+  normal:
+    transform: none
+
+recording:
+  resolutions: []
+  fps: []
+
+color:
+  exposure_ev: 0.0
+  contrast: 1.0
+  saturation: 1.0
+  wb_temperature: 0
+  wb_tint: 0
+  highlight_protection: 0.0
+
+export:
+  codec: hevc
+  bit_depth: 10
+  crf: 18
+  preset: medium
+  x265_params: "frame-threads=1:rc-lookahead=10"
+  audio: copy
+  container: mp4

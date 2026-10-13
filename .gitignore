@@ -121,3 +121,16 @@ labels/
 
 # Named GUI settings (presets/*.yaml next to config.yaml). User data.
 presets/
+
+# DroneReel-AI: footage, DJI sidecars and LUTs never go into the repo (the fork
+# is public). Results and logs live outside it too.
+*.mp4
+*.MP4
+*.mov
+*.MOV
+*.lrf
+*.LRF
+*.srt
+*.SRT
+*.cube
+dronereel-output/

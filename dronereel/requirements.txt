@@ -1,0 +1,11 @@
+# DroneReel-AI only. Not upstream's requirements.txt (~1.9 GB, GUI, torch,
+# Selenium...): this package runs on a Raspberry Pi with what is listed here.
+# System tools: ffmpeg and ffprobe (Debian: apt install ffmpeg).
+PyYAML==6.0.3
+numpy==2.5.4
+# Headless: no Qt or desktop libraries. Frame analysis (F2) and upstream's
+# shot_window / clip_quality, which import cv2.
+opencv-python-headless==5.0.0.93
+
+# Tests
+pytest==9.1.1
