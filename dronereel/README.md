@@ -65,6 +65,30 @@ select:
 sintéticos; no reconoce maniobras con nombre (flip, dive), solo mide
 velocidades de rotación y avance. Se ajustarán con tus valoraciones (F6–F7).
 
+```bash
+.venv/bin/python -m dronereel export VIDEO.MP4 --min 10 --max 30     # elige y exporta
+.venv/bin/python -m dronereel export VIDEO.MP4 --start 62 --end 84    # tramo a mano
+.venv/bin/python -m dronereel export VIDEO.MP4 --mode reencode        # corte exacto
+```
+
+`export` escribe **un solo archivo** con un único tramo continuo, en
+`~/dronereel-output/` (nunca en la carpeta del original, nunca encima de otro
+archivo), y a su lado un `.json` con el origen (y su SHA-256), los tiempos, la
+selección y el comando de ffmpeg. Al terminar comprueba que el original no ha
+cambiado.
+
+* `--mode auto` (por defecto): copia directa si la imagen no cambia. Sin
+  recomprimir, máxima calidad, menos de un segundo incluso en 4K. Solo puede
+  cortar en fotogramas clave, así que el tramo se amplía un poco (lo avisa).
+* `--mode reencode`: el tramo exacto al fotograma, en H.265 10 bits
+  (`--codec h264` y `--bit-depth 8` como opción), `crf 18`. Lento en la Pi:
+  ~0,9 fotogramas/s en 4K (un clip de 20 s a 4K60 ≈ 22 min) y ~2,5 GB de
+  memoria: cierra Firefox antes. Lo avisa con una estimación.
+
+Siempre: mismos fps que el original (sin remuestrear), audio original copiado
+si existe, etiquetas de color del original, sin música, transiciones ni
+títulos. El color (F5) todavía no se aplica.
+
 `probe` solo lee el archivo. El color se transforma **únicamente** con un
 perfil confirmado: por ti (`--camera` + `--profile`) o por una regla marcada
 `verified: true` en el YAML de la cámara. Si no, se conserva el color original.

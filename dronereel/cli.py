@@ -4,6 +4,7 @@
     probe VIDEO [...]       metadata, evidence, and the colour decision
     analyze VIDEO [...]     per-sample measurements, cached (F2)
     select VIDEO [...]      the one continuous segment to export, and why (F3)
+    export VIDEO [...]      write that one segment to its own file (F4)
 
 ``probe`` only reads. ``--camera`` and ``--profile`` are how a profile is
 confirmed by hand until a camera's identification rules are verified.
@@ -125,38 +126,47 @@ def cmd_analyze(args) -> int:
     return 0
 
 
-def cmd_select(args) -> int:
-    import yaml
+class _ConfigError(Exception):
+    pass
 
+
+def _read_config(path) -> dict:
+    import yaml
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError) as e:
+        raise _ConfigError(e) from None
+
+
+def _select_config(args, raw: dict):
+    from dronereel import selector as sel
+    # A file with sections uses 'select:'; a flat file is all selection options.
+    raw = dict((raw.get("select") or {}) if {"select", "export"} & set(raw) else raw)
+    for key, value in (("min_duration", args.min), ("max_duration", args.max),
+                       ("pre_roll", args.pre), ("post_roll", args.post)):
+        if value is not None:
+            raw[key] = value
+    try:
+        return sel.SelectConfig.from_dict(raw)
+    except (ValueError, TypeError) as e:
+        raise _ConfigError(e) from None
+
+
+def _run_selection(args, media, cfg):
+    """``(analysis, selection)``; raises ValueError when nothing can be chosen."""
     from dronereel import analyze as an
     from dronereel import selector as sel
-    from dronereel.safety import output_path
-
-    try:
-        raw = {}
-        if args.config:
-            with open(args.config, "r", encoding="utf-8") as f:
-                raw = yaml.safe_load(f) or {}
-            raw = raw.get("select", raw)
-        for key, value in (("min_duration", args.min), ("max_duration", args.max),
-                           ("pre_roll", args.pre), ("post_roll", args.post)):
-            if value is not None:
-                raw[key] = value
-        cfg = sel.SelectConfig.from_dict(raw)
-    except (OSError, ValueError, TypeError, yaml.YAMLError) as e:
-        print(f"Error en la configuración: {e}", file=sys.stderr)
-        return 2
-
-    media = probe_media(args.video)
     result = an.analyze(media, use_cache=not args.no_cache, cache_dir=an.CACHE_DIR,
                         prefer_hardware=not args.software, progress=an.print_progress)
     print(file=sys.stderr)
-    try:
-        choice = sel.select(result, cfg)
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 2
+    return result, sel.select(result, cfg)
 
+
+def _print_selection(media, result, choice, cfg) -> None:
+    from dronereel import selector as sel
     best = choice.best
     limit = f"{cfg.max_duration:g} s" if cfg.max_duration else "sin límite"
     print(f"Archivo:    {media.path} ({result.duration:.1f} s)")
@@ -174,12 +184,101 @@ def cmd_select(args) -> int:
     if len(choice.candidates) < 2:
         print("  ninguna")
 
+
+def cmd_select(args) -> int:
+    from dronereel import analyze as an
+    from dronereel import selector as sel
+    from dronereel.safety import output_path
+
+    try:
+        cfg = _select_config(args, _read_config(args.config))
+    except _ConfigError as e:
+        print(f"Error en la configuración: {e}", file=sys.stderr)
+        return 2
+    media = probe_media(args.video)
+    try:
+        result, choice = _run_selection(args, media, cfg)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    _print_selection(media, result, choice, cfg)
+
     stem = os.path.splitext(os.path.basename(media.path))[0]
     log = output_path(args.output, f"{stem}_select.json", [media.path])
     record = sel.log_record(choice, result, media.path,
                             an.content_key(media.path, result.fps, result.width))
     sel.write_log(record, log)
     print(f"Registro:   {log}")
+    return 0
+
+
+def cmd_export(args) -> int:
+    from dronereel import analyze as an
+    from dronereel import export as ex
+    from dronereel import selector as sel
+
+    media = probe_media(args.video)
+    try:
+        raw = _read_config(args.config)
+        cameras = _cameras(args)
+        decision = profiles.decide(media, cameras, camera=args.camera, profile=args.profile)
+        export_raw = {}
+        if decision.camera and decision.camera in cameras:
+            export_raw.update(cameras[decision.camera].export)
+        export_raw.update(raw.get("export") or {})
+        for key, value in (("mode", args.mode), ("codec", args.codec), ("crf", args.crf),
+                           ("preset", args.preset), ("bit_depth", args.bit_depth)):
+            if value is not None:
+                export_raw[key] = value
+        ecfg = ex.ExportConfig.from_dict(export_raw)
+        scfg = _select_config(args, raw)
+    except (_ConfigError, ValueError, TypeError) as e:
+        print(f"Error en la configuración: {e}", file=sys.stderr)
+        return 2
+
+    extra = {"color": {"camera": decision.camera, "profile": decision.profile,
+                       "profile_source": decision.profile_source, "applied": False}}
+    if (args.start is None) != (args.end is None):
+        print("Error: --start y --end van juntos", file=sys.stderr)
+        return 2
+    if args.start is not None:
+        start, end = args.start, args.end
+        print(f"Segmento:   {start:.2f} s → {end:.2f} s (indicado a mano)")
+        extra["selection"] = {"manual": True, "start": start, "end": end}
+    else:
+        try:
+            result, choice = _run_selection(args, media, scfg)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 2
+        _print_selection(media, result, choice, scfg)
+        start, end = choice.best.start, choice.best.end
+        extra["selection"] = sel.log_record(
+            choice, result, media.path, an.content_key(media.path, result.fps, result.width))
+
+    if decision.apply_color:
+        print("AVISO: el perfil confirmado pide transformar el color, pero eso llega en la F5; "
+              "esta exportación conserva el color original.")
+    if ecfg.mode == "reencode":
+        for note in ex.reencode_notes(media, start, end):
+            print(note)
+    try:
+        res = ex.export_segment(media, start, end, args.output, ecfg,
+                                progress=ex.print_progress)
+    except (ex.ExportError, ValueError) as e:
+        print(f"\nError: {e}", file=sys.stderr)
+        return 2
+    print(file=sys.stderr)
+    record = ex.write_record(res, media, extra)
+    how = ("copia directa, sin recomprimir" if res.mode == "copy"
+           else f"recodificado {ecfg.codec} {ecfg.bit_depth} bits, crf {ecfg.crf:g}")
+    print(f"Exportado:  {res.path}")
+    print(f"            {res.start:.2f} s → {res.end:.2f} s ({res.duration:.2f} s, "
+          f"{res.frames} fotogramas a {res.fps} fps), {how}, en {res.seconds:.1f} s")
+    for w in res.warnings:
+        print(f"  AVISO: {w}")
+    print(f"Registro:   {record}")
+    print("Original:   sin cambios (huella SHA-256 verificada)")
     return 0
 
 
@@ -219,6 +318,29 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("--software", action="store_true", help="no usar el decodificador por hardware")
     se.add_argument("--no-cache", action="store_true", help="medir de nuevo aunque haya caché")
     se.set_defaults(func=cmd_select)
+
+    ex = sub.add_parser("export", help="exporta UN segmento continuo a un archivo nuevo")
+    ex.add_argument("video")
+    ex.add_argument("--start", type=float, help="inicio en s (sin él, lo elige 'select')")
+    ex.add_argument("--end", type=float, help="fin en s (con --start)")
+    ex.add_argument("--min", type=float, help="duración mínima en s (10)")
+    ex.add_argument("--max", type=float, help="duración máxima en s (30; 0 = sin límite)")
+    ex.add_argument("--pre", type=float, help="contexto antes del mejor momento, s (2)")
+    ex.add_argument("--post", type=float, help="contexto después del mejor momento, s (2)")
+    ex.add_argument("--mode", choices=["auto", "copy", "reencode"],
+                    help="auto (copia si no cambia la imagen), copy o reencode")
+    ex.add_argument("--codec", choices=["hevc", "h264"], help="códec al recodificar (hevc)")
+    ex.add_argument("--bit-depth", type=int, choices=[8, 10], help="bits al recodificar (10)")
+    ex.add_argument("--crf", type=float, help="calidad al recodificar (18; menor = mejor)")
+    ex.add_argument("--preset", help="preset del codificador (medium)")
+    ex.add_argument("--camera", help="cámara de origen (p. ej. avata2)")
+    ex.add_argument("--profile", help="perfil de color confirmado (p. ej. dlog_m)")
+    ex.add_argument("--config", help="YAML con secciones 'select:' y 'export:'")
+    ex.add_argument("--output", default=DEFAULT_OUTPUT_DIR,
+                    help=f"carpeta de salida (por defecto {DEFAULT_OUTPUT_DIR})")
+    ex.add_argument("--software", action="store_true", help="no usar el decodificador por hardware")
+    ex.add_argument("--no-cache", action="store_true", help="medir de nuevo aunque haya caché")
+    ex.set_defaults(func=cmd_export)
     return p
 
 

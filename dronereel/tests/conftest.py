@@ -90,3 +90,81 @@ def motion_clips(tmp_path_factory):
     _ffmpeg("-f", "lavfi", "-i", "color=c=0x3060c0:size=640x360:rate=30",
             "-t", "2.5", *enc, out["flat"])
     return out
+
+
+# Frame-numbered clips: frame k shows k in binary as 12 white/black blocks,
+# so an export can be checked frame by frame — which source frames it holds,
+# in which order, with nothing skipped, repeated or spliced in.
+NUM_W, NUM_H, NUM_BITS = 320, 240, 12
+
+
+def _numbered_frame(k: int):
+    import numpy as np
+    img = np.zeros((NUM_H, NUM_W), np.uint8)
+    for b in range(NUM_BITS):
+        r, c = divmod(b, 4)
+        if k >> b & 1:
+            img[r * 80 + 10:r * 80 + 70, c * 80 + 10:c * 80 + 70] = 255
+    return img
+
+
+def make_numbered(path: str, frames: int, rate: str, video_args: list, audio: bool) -> str:
+    cmd = ["ffmpeg", "-hide_banner", "-v", "error", "-y", "-f", "rawvideo",
+           "-pix_fmt", "gray", "-s", f"{NUM_W}x{NUM_H}", "-r", rate, "-i", "-"]
+    if audio:
+        cmd += ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                "-shortest", "-c:a", "aac"]
+    proc = subprocess.Popen([*cmd, *video_args, path], stdin=subprocess.PIPE)
+    for k in range(frames):
+        proc.stdin.write(_numbered_frame(k).tobytes())
+    proc.stdin.close()
+    assert proc.wait() == 0
+    return path
+
+
+def read_frame_numbers(path: str) -> list:
+    """The frame number shown in every decoded frame of ``path``, in order."""
+    import numpy as np
+    out = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0",
+                          "-fps_mode", "passthrough", "-vf", f"scale={NUM_W}:{NUM_H}",
+                          "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                         capture_output=True, check=True).stdout
+    frames = np.frombuffer(out, np.uint8).reshape(-1, NUM_H, NUM_W)
+    numbers = []
+    for img in frames:
+        k = 0
+        for b in range(NUM_BITS):
+            r, c = divmod(b, 4)
+            if img[r * 80 + 40, c * 80 + 40] > 128:
+                k |= 1 << b
+        numbers.append(k)
+    return numbers
+
+
+@pytest.fixture(scope="session")
+def numbered(tmp_path_factory):
+    """``{"h264": path, "hevc": path, "hevc_open": path, "dir": folder}``.
+
+    h264: 300 frames at 30000/1001 with B-frames, a keyframe every 30 frames,
+    AAC audio, BT.709 tags. hevc: 125 frames at 25 fps, 10-bit, no audio.
+    hevc_open: 400 frames at 60 fps, 10-bit, open GOP, keyframe every 60."""
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg/ffprobe not installed")
+    src = tmp_path_factory.mktemp("numbered_originals")
+    h264 = make_numbered(str(src / "DJI_0010.MP4"), 300, "30000/1001",
+                         ["-c:v", "libx264", "-g", "30", "-bf", "2", "-crf", "16",
+                          "-pix_fmt", "yuv420p", "-vf",
+                          "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"],
+                         audio=True)
+    hevc = make_numbered(str(src / "DJI_0011.MP4"), 125, "25",
+                         ["-c:v", "libx265", "-preset", "ultrafast", "-crf", "16",
+                          "-x265-params", "log-level=error:frame-threads=1:keyint=25",
+                          "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1"], audio=False)
+    # Open GOP with B-frames across each keyframe: pictures shown before a
+    # keyframe are stored after it, which a stream copy must account for.
+    hevc_open = make_numbered(str(src / "DJI_0012.MP4"), 400, "60",
+                              ["-c:v", "libx265", "-preset", "ultrafast", "-crf", "16",
+                               "-x265-params", "log-level=error:frame-threads=1:keyint=60:"
+                               "open-gop=1:bframes=3:b-adapt=0",
+                               "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1"], audio=False)
+    return {"dir": str(src), "h264": h264, "hevc": hevc, "hevc_open": hevc_open}
