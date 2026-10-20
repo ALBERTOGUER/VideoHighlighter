@@ -119,6 +119,43 @@ el color añade ~7 % al tiempo de recodificación (0,86 fps en 4K).
 Limitaciones: la protección de altas luces no recupera lo que la LUT oficial
 ya recorta; el balance de blancos es una aproximación por ganancias de canal.
 
+### Valorar los clips (dataset para aprender tu gusto)
+
+```bash
+.venv/bin/python -m dronereel review --open          # uno a uno, abre cada clip
+.venv/bin/python -m dronereel rate ~/dronereel-output/CLIP.json --score 4 --accept
+.venv/bin/python -m dronereel rate ~/dronereel-output/CLIP.json --prefer 2   # la alternativa 2 era mejor
+.venv/bin/python -m dronereel rate VIDEO.MP4 --manual 62 84 --score 5     # el tramo que tú elegirías
+.venv/bin/python -m dronereel dataset                 # resumen
+```
+
+Se guarda en `~/.local/share/dronereel/ratings.jsonl`: una línea por
+valoración, solo se añaden líneas (nunca se reescribe). Cada línea lleva lo
+necesario para aprender sin volver a abrir el vídeo: las características del
+tramo valorado y de las alternativas del selector, los ajustes usados y la
+huella SHA-256 del original y su ruta. **Los vídeos no se copian**: el
+dataset son números y referencias; los clips siguen en `~/dronereel-output/`.
+
+Si valoras en dos equipos (Pi y Mac), une los archivos sin duplicados:
+`dataset --merge /ruta/al/otro/ratings.jsonl`.
+
+## En un Mac
+
+```bash
+brew install ffmpeg git python
+git clone -b dronereel https://github.com/ALBERTOGUER/VideoHighlighter.git
+cd VideoHighlighter
+python3 -m venv .venv
+.venv/bin/pip install -r dronereel/requirements.txt
+.venv/bin/python -m pytest dronereel/tests
+```
+
+Todo igual que en la Pi; las rutas `~/…` son las mismas. Diferencias: el
+análisis decodifica por software (el atajo por hardware es de la Pi), y la
+recodificación es mucho más rápida, así que conviene quitar el límite de
+memoria de x265: copia el YAML de la cámara a `~/.config/dronereel/profiles/`
+y pon `x265_params: ""` en `export:`. Probado solo en la Pi.
+
 `probe` solo lee el archivo. El color se transforma **únicamente** con un
 perfil confirmado: por ti (`--camera` + `--profile`) o por una regla marcada
 `verified: true` en el YAML de la cámara. Si no, se conserva el color original.

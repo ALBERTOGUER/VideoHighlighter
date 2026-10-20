@@ -6,6 +6,9 @@
     select VIDEO [...]      the one continuous segment to export, and why (F3)
     export VIDEO [...]      write that one segment to its own file (F4, colour F5)
     color VIDEO [...]       original vs corrected stills, to tune the colour (F5)
+    rate RECORD|VIDEO [...] add a judgement to your ratings dataset (F6)
+    review [...]            rate the exported clips not rated yet, one by one (F6)
+    dataset [...]           what the ratings dataset holds; merge another machine's
 
 ``probe`` only reads. ``--camera`` and ``--profile`` are how a profile is
 confirmed by hand until a camera's identification rules are verified.
@@ -377,6 +380,151 @@ def cmd_export(args) -> int:
     return 0
 
 
+def _clip_features(record: dict, args):
+    """Features of a clip exported with a hand-given range (its record has
+    none): measured now if the source is here, else ``None``."""
+    from dronereel import analyze as an
+    from dronereel import selector as sel
+    src = record["source"]["path"]
+    if not os.path.exists(src):
+        print("AVISO: el original no está en este equipo; la valoración se guarda sin "
+              "características del tramo (servirá menos para aprender).")
+        return None
+    media = probe_media(src)
+    a = an.analyze(media, cache_dir=an.CACHE_DIR, progress=an.print_progress)
+    print(file=sys.stderr)
+    e = record["export"]
+    return sel.describe(a, e["start"], e["end"]).to_dict()["parts"]
+
+
+def _load_record(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def cmd_rate(args) -> int:
+    from dronereel import analyze as an
+    from dronereel import dataset as ds
+    from dronereel import selector as sel
+    from dronereel.safety import fingerprint
+
+    verdict = "accept" if args.accept else "reject" if args.reject else None
+    try:
+        if args.manual:
+            start, end = args.manual
+            media = probe_media(args.target)
+            cfg = _select_config(args, _read_config(args.config))
+            a, choice = _run_selection(args, media, cfg)
+            fp = fingerprint(media.path)
+            source = {"path": media.path, "sha256": fp.sha256, "duration": media.duration,
+                      "fps": media.fps_fraction}
+            selection = sel.log_record(choice, a, media.path,
+                                       an.content_key(media.path, a.fps, a.width))
+            features = sel.describe(a, start, end, cfg).to_dict()["parts"]
+            entry = ds.manual_entry(source, start, end, features, selection,
+                                    score=args.score, note=args.note or "")
+        else:
+            if args.target.lower().endswith((".mp4", ".mov")):
+                guess = os.path.splitext(args.target)[0] + ".json"
+                if not os.path.exists(guess):
+                    raise ds.DatasetError("Pasa el .json del clip (o un vídeo con --manual)")
+                args.target = guess
+            record = _load_record(args.target)
+            features = None
+            if not ((record.get("selection") or {}).get("best")):
+                features = _clip_features(record, args)
+            entry = ds.rating_entry(record, args.target, score=args.score, verdict=verdict,
+                                    prefer=args.prefer, note=args.note or "",
+                                    features=features)
+    except (ds.DatasetError, _ConfigError, ValueError, OSError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    ds.append([entry], args.dataset)
+    print(f"Guardado en {args.dataset} ({len(ds.read(args.dataset))} valoraciones en total)")
+    return 0
+
+
+def _open_player(path: str) -> None:
+    import shutil
+    import subprocess
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    if shutil.which(opener):
+        subprocess.Popen([opener, path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _ask(prompt: str, valid=None):
+    """Input until valid; '' (Enter) means skip, 'q' quits."""
+    while True:
+        answer = input(prompt).strip().lower()
+        if answer in ("", "q") or valid is None or answer in valid:
+            return answer
+        print("  Respuesta no válida.")
+
+
+def cmd_review(args) -> int:
+    from dronereel import dataset as ds
+
+    done = ds.rated_clips(ds.read(args.dataset))
+    pending = [(p, r) for p, r in ds.find_records(args.output) if p not in done]
+    if not pending:
+        print(f"No hay clips sin valorar en {args.output}.")
+        return 0
+    print(f"{len(pending)} clip(s) sin valorar. Enter = saltar, q = salir.\n")
+    saved = 0
+    for path, rec in pending:
+        e = rec["export"]
+        print(f"Clip:   {e['path']}")
+        print(f"        {e['start']:.2f} → {e['end']:.2f} s de "
+              f"{os.path.basename(rec['source']['path'])}")
+        cands = (rec.get("selection") or {}).get("candidates") or []
+        for i, c in enumerate(cands[1:], start=2):
+            print(f"        alternativa {i}: {c['start']:.1f} → {c['end']:.1f} s")
+        if args.open and os.path.exists(e["path"]):
+            _open_player(e["path"])
+        score = _ask("  Puntuación 1-5: ", {"1", "2", "3", "4", "5"})
+        if score == "q":
+            break
+        verdict = _ask("  ¿Lo aceptas? (s/n): ", {"s", "n", "si", "sí", "no"})
+        if verdict == "q":
+            break
+        prefer = ""
+        if len(cands) > 1:
+            prefer = _ask("  ¿Preferías una alternativa? (número): ",
+                          {str(i) for i in range(2, len(cands) + 1)})
+            if prefer == "q":
+                break
+        note = input("  Nota (opcional): ").strip()
+        if not (score or verdict or prefer):
+            print("  Saltado.\n")
+            continue
+        features = None if (rec.get("selection") or {}).get("best") else _clip_features(rec, args)
+        entry = ds.rating_entry(
+            rec, path, score=int(score) if score else None,
+            verdict=None if not verdict else ("reject" if verdict in ("n", "no") else "accept"),
+            prefer=int(prefer) if prefer else None, note=note, features=features)
+        ds.append([entry], args.dataset)
+        saved += 1
+        print("  Guardado.\n")
+    print(f"{saved} valoración(es) guardada(s) en {args.dataset}")
+    return 0
+
+
+def cmd_dataset(args) -> int:
+    from dronereel import dataset as ds
+    if args.merge:
+        n = ds.merge(args.merge, args.dataset)
+        print(f"Añadidas {n} valoraciones nuevas de {args.merge}")
+    sm = ds.summary(ds.read(args.dataset))
+    print(f"Dataset:    {args.dataset}")
+    print(f"Entradas:   {sm['total']} de {sm['sources']} vídeo(s): {sm['ratings']} valoraciones "
+          f"de clips, {sm['manual']} tramos elegidos a mano")
+    print(f"Veredictos: {sm['accept']} aceptados, {sm['reject']} rechazados, "
+          f"{sm['prefer_alternative']} con una alternativa preferida")
+    if sm["scores"]:
+        print("Puntuación: " + ", ".join(f"{k}★ ×{v}" for k, v in sorted(sm["scores"].items())))
+    return 0
+
+
 def _add_color_args(p) -> None:
     p.add_argument("--lut", help="LUT oficial .cube (sustituye a la del YAML de la cámara)")
     p.add_argument("--exposure", type=float, help="exposición en EV (-3 a 3)")
@@ -459,6 +607,39 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"carpeta de salida (por defecto {DEFAULT_OUTPUT_DIR})")
     _add_color_args(co)
     co.set_defaults(func=cmd_color)
+
+    from dronereel.dataset import DEFAULT_PATH as DATASET
+    ra = sub.add_parser("rate", help="guarda una valoración en tu dataset")
+    ra.add_argument("target", help="el .json (o .mp4) de un clip exportado, o un vídeo con --manual")
+    ra.add_argument("--score", type=int, choices=range(1, 6), metavar="1-5", help="puntuación")
+    verdict = ra.add_mutually_exclusive_group()
+    verdict.add_argument("--accept", action="store_true", help="el clip vale")
+    verdict.add_argument("--reject", action="store_true", help="el clip no vale")
+    ra.add_argument("--prefer", type=int, help="esta alternativa era mejor (2, 3...)")
+    ra.add_argument("--manual", type=float, nargs=2, metavar=("INICIO", "FIN"),
+                    help="el tramo que tú elegirías, en s (con un vídeo)")
+    ra.add_argument("--note", help="comentario libre")
+    ra.add_argument("--min", type=float, help=argparse.SUPPRESS)
+    ra.add_argument("--max", type=float, help=argparse.SUPPRESS)
+    ra.add_argument("--pre", type=float, help=argparse.SUPPRESS)
+    ra.add_argument("--post", type=float, help=argparse.SUPPRESS)
+    ra.add_argument("--config", help="YAML con la sección 'select:' (con --manual)")
+    ra.add_argument("--software", action="store_true", help=argparse.SUPPRESS)
+    ra.add_argument("--no-cache", action="store_true", help=argparse.SUPPRESS)
+    ra.add_argument("--dataset", default=DATASET, help=f"archivo del dataset ({DATASET})")
+    ra.set_defaults(func=cmd_rate)
+
+    rv = sub.add_parser("review", help="valora uno a uno los clips exportados sin valorar")
+    rv.add_argument("--output", default=DEFAULT_OUTPUT_DIR,
+                    help=f"carpeta de los clips (por defecto {DEFAULT_OUTPUT_DIR})")
+    rv.add_argument("--open", action="store_true", help="abrir cada clip en el reproductor")
+    rv.add_argument("--dataset", default=DATASET, help=f"archivo del dataset ({DATASET})")
+    rv.set_defaults(func=cmd_review)
+
+    dt = sub.add_parser("dataset", help="resumen del dataset; unir el de otro equipo")
+    dt.add_argument("--merge", help="otro ratings.jsonl (p. ej. del Mac) para añadir")
+    dt.add_argument("--dataset", default=DATASET, help=f"archivo del dataset ({DATASET})")
+    dt.set_defaults(func=cmd_dataset)
     return p
 
 

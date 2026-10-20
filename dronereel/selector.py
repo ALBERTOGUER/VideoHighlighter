@@ -391,6 +391,21 @@ def _refine(sc, a, cfg, st, L, lo_len, hi_len, scored: Window) -> Window:
     return sc.window(s1, e1 - s1, lo_len, hi_len)
 
 
+def describe(a: Analysis, start: float, end: float,
+             cfg: Optional[SelectConfig] = None) -> Window:
+    """Score an arbitrary ``[start, end)`` the way :func:`select` scores its
+    windows — e.g. one the user picked by hand — so it can be compared with
+    the windows the selector preferred. It may cross a cut; that is the
+    user's call."""
+    cfg = cfg or SelectConfig()
+    s = max(0, min(a.count - 1, int(round(start * a.fps))))
+    e = max(s + 1, min(a.count, int(round(end * a.fps))))
+    sc = _Scorer(a, cfg)
+    lo = max(1, int(round(cfg.min_duration * a.fps)))
+    hi = int(round(cfg.max_duration * a.fps)) if cfg.max_duration else a.count
+    return sc.window(s, e - s, min(lo, e - s), max(hi, e - s))
+
+
 def log_record(sel: Selection, a: Analysis, video: str, analysis_key: str) -> dict:
     """What gets written next to the result: enough to reproduce the choice
     and, later (F6), to learn from what the user accepts or picks instead."""
