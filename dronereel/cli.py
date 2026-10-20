@@ -9,6 +9,7 @@
     rate RECORD|VIDEO [...] add a judgement to your ratings dataset (F6)
     review [...]            rate the exported clips not rated yet, one by one (F6)
     dataset [...]           what the ratings dataset holds; merge another machine's
+    train [...]             learn your taste from the ratings, before vs after (F7)
 
 ``probe`` only reads. ``--camera`` and ``--profile`` are how a profile is
 confirmed by hand until a camera's identification rules are verified.
@@ -159,14 +160,64 @@ def _select_config(args, raw: dict):
         raise _ConfigError(e) from None
 
 
-def _run_selection(args, media, cfg):
+_FEATURE_NAMES = {"exposure": "exposición", "clarity": "nitidez", "stability": "estabilidad",
+                  "dynamism": "dinamismo", "manoeuvre": "giros/maniobras", "detail": "detalle",
+                  "proximity": "proximidad", "quality": "calidad media",
+                  "worst_second": "peor segundo", "variety": "variedad",
+                  "empty": "tramos vacíos", "missing_context": "falta de contexto",
+                  "duration": "duración"}
+
+
+def _ranker(args):
+    """``(model or None, why)`` for selection: an explicit ``--model``, else
+    the default model only when its evaluation showed it beats the selector."""
+    from dronereel import ranker as rk
+    if getattr(args, "no_model", False):
+        return None, "desactivado (--no-model)"
+    path = getattr(args, "model", None)
+    try:
+        model = rk.load(path or rk.DEFAULT_MODEL)
+    except (ValueError, OSError, KeyError) as e:
+        if path:
+            raise _ConfigError(f"modelo {path}: {e}") from None
+        return None, f"el modelo guardado no se puede usar ({e})"
+    if model is None:
+        if path:
+            raise _ConfigError(f"no existe el modelo {path}")
+        return None, "sin modelo todavía (valora clips y ejecuta 'train')"
+    ev = model.trained.get("evaluation") or {}
+    acc = (f"; acierta {ev['after'] * 100:.0f} % frente a {ev['before'] * 100:.0f} % "
+           f"en vídeos no vistos" if "after" in ev else "")
+    desc = f"{model.trained.get('entries', '?')} valoraciones de {model.trained.get('videos', '?')} vídeos{acc}"
+    if path:
+        return model, f"{path} ({desc})"
+    if not model.better:
+        return None, f"el modelo guardado no mejora al selector todavía ({desc})"
+    return model, f"el tuyo ({desc})"
+
+
+def _run_selection(args, media, cfg, ranker=None):
     """``(analysis, selection)``; raises ValueError when nothing can be chosen."""
     from dronereel import analyze as an
     from dronereel import selector as sel
     result = an.analyze(media, use_cache=not args.no_cache, cache_dir=an.CACHE_DIR,
                         prefer_hardware=not args.software, progress=an.print_progress)
     print(file=sys.stderr)
-    return result, sel.select(result, cfg)
+    return result, sel.select(result, cfg, ranker)
+
+
+def _print_model(result, choice, cfg, model, why) -> None:
+    """Before/after for this video: what the hand-made selector alone picks."""
+    from dronereel import selector as sel
+    print(f"Modelo:     {why}")
+    if model is None:
+        return
+    plain = sel.select(result, cfg).best
+    b = choice.best
+    if abs(plain.start - b.start) < 0.05 and abs(plain.end - b.end) < 0.05:
+        print("            sin tu modelo habría elegido el mismo tramo")
+    else:
+        print(f"            sin tu modelo habría elegido {plain.start:.2f} → {plain.end:.2f} s")
 
 
 def _print_selection(media, result, choice, cfg) -> None:
@@ -201,16 +252,19 @@ def cmd_select(args) -> int:
         return 2
     media = probe_media(args.video)
     try:
-        result, choice = _run_selection(args, media, cfg)
-    except ValueError as e:
+        model, why = _ranker(args)
+        result, choice = _run_selection(args, media, cfg, model)
+    except (ValueError, _ConfigError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
     _print_selection(media, result, choice, cfg)
+    _print_model(result, choice, cfg, model, why)
 
     stem = os.path.splitext(os.path.basename(media.path))[0]
     log = output_path(args.output, f"{stem}_select.json", [media.path])
     record = sel.log_record(choice, result, media.path,
                             an.content_key(media.path, result.fps, result.width))
+    record["model"] = model.trained if model is not None else None
     sel.write_log(record, log)
     print(f"Registro:   {log}")
     return 0
@@ -309,6 +363,7 @@ def cmd_export(args) -> int:
                 export_raw[key] = value
         ecfg = ex.ExportConfig.from_dict(export_raw)
         scfg = _select_config(args, raw)
+        model, why = _ranker(args)
     except (_ConfigError, ValueError, TypeError) as e:
         print(f"Error en la configuración: {e}", file=sys.stderr)
         return 2
@@ -335,14 +390,16 @@ def cmd_export(args) -> int:
         extra["selection"] = {"manual": True, "start": start, "end": end}
     else:
         try:
-            result, choice = _run_selection(args, media, scfg)
+            result, choice = _run_selection(args, media, scfg, model)
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 2
         _print_selection(media, result, choice, scfg)
+        _print_model(result, choice, scfg, model, why)
         start, end = choice.best.start, choice.best.end
         extra["selection"] = sel.log_record(
             choice, result, media.path, an.content_key(media.path, result.fps, result.width))
+        extra["selection"]["model"] = model.trained if model is not None else None
 
     print(f"Color:      {_describe_color(cplan)}")
     if cplan:
@@ -381,20 +438,21 @@ def cmd_export(args) -> int:
 
 
 def _clip_features(record: dict, args):
-    """Features of a clip exported with a hand-given range (its record has
-    none): measured now if the source is here, else ``None``."""
+    """``(features, selector score)`` of a clip exported with a hand-given
+    range (its record has none): measured now if the source is here."""
     from dronereel import analyze as an
     from dronereel import selector as sel
     src = record["source"]["path"]
     if not os.path.exists(src):
         print("AVISO: el original no está en este equipo; la valoración se guarda sin "
               "características del tramo (servirá menos para aprender).")
-        return None
+        return None, None
     media = probe_media(src)
     a = an.analyze(media, cache_dir=an.CACHE_DIR, progress=an.print_progress)
     print(file=sys.stderr)
     e = record["export"]
-    return sel.describe(a, e["start"], e["end"]).to_dict()["parts"]
+    w = sel.describe(a, e["start"], e["end"])
+    return w.to_dict()["parts"], w.score
 
 
 def _load_record(path: str) -> dict:
@@ -420,9 +478,10 @@ def cmd_rate(args) -> int:
                       "fps": media.fps_fraction}
             selection = sel.log_record(choice, a, media.path,
                                        an.content_key(media.path, a.fps, a.width))
-            features = sel.describe(a, start, end, cfg).to_dict()["parts"]
-            entry = ds.manual_entry(source, start, end, features, selection,
-                                    score=args.score, note=args.note or "")
+            w = sel.describe(a, start, end, cfg)
+            entry = ds.manual_entry(source, start, end, w.to_dict()["parts"], selection,
+                                    score=args.score, note=args.note or "",
+                                    selector_score=w.score)
         else:
             if args.target.lower().endswith((".mp4", ".mov")):
                 guess = os.path.splitext(args.target)[0] + ".json"
@@ -430,12 +489,12 @@ def cmd_rate(args) -> int:
                     raise ds.DatasetError("Pasa el .json del clip (o un vídeo con --manual)")
                 args.target = guess
             record = _load_record(args.target)
-            features = None
+            features = base = None
             if not ((record.get("selection") or {}).get("best")):
-                features = _clip_features(record, args)
+                features, base = _clip_features(record, args)
             entry = ds.rating_entry(record, args.target, score=args.score, verdict=verdict,
                                     prefer=args.prefer, note=args.note or "",
-                                    features=features)
+                                    features=features, selector_score=base)
     except (ds.DatasetError, _ConfigError, ValueError, OSError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
@@ -497,15 +556,52 @@ def cmd_review(args) -> int:
         if not (score or verdict or prefer):
             print("  Saltado.\n")
             continue
-        features = None if (rec.get("selection") or {}).get("best") else _clip_features(rec, args)
+        features = base = None
+        if not (rec.get("selection") or {}).get("best"):
+            features, base = _clip_features(rec, args)
         entry = ds.rating_entry(
             rec, path, score=int(score) if score else None,
             verdict=None if not verdict else ("reject" if verdict in ("n", "no") else "accept"),
-            prefer=int(prefer) if prefer else None, note=note, features=features)
+            prefer=int(prefer) if prefer else None, note=note, features=features,
+            selector_score=base)
         ds.append([entry], args.dataset)
         saved += 1
         print("  Guardado.\n")
     print(f"{saved} valoración(es) guardada(s) en {args.dataset}")
+    return 0
+
+
+def cmd_train(args) -> int:
+    import numpy as np
+
+    from dronereel import dataset as ds
+    from dronereel import ranker as rk
+
+    entries = ds.read(args.dataset)
+    print(f"Dataset:    {args.dataset} ({len(entries)} entradas)")
+    model, ev = rk.train(entries)
+    print(f"Pares:      {ev.get('pairs', 0)} preferencias de {ev.get('videos', 0)} vídeo(s)")
+    if "after" in ev:
+        print(f"Antes:      el selector acierta el {ev['before'] * 100:.0f} % de tus "
+              f"preferencias en vídeos que el modelo no ha visto")
+        print(f"Después:    con tu modelo, el {ev['after'] * 100:.0f} % "
+              f"({ev['test_pairs']} pares de prueba)")
+    if ev.get("reason"):
+        print(f"Nota:       {ev['reason']}")
+    if model is None:
+        print("No se ha entrenado ningún modelo.")
+        return 1
+    order = np.argsort(-np.abs(model.adj))
+    learned = [f"{'+' if model.adj[i] > 0 else '−'}{_FEATURE_NAMES.get(rk.FEATURES[i], rk.FEATURES[i])}"
+               for i in order[:4] if abs(model.adj[i]) > 0.005]
+    print("Aprendido:  " + (", ".join(learned) if learned else "casi nada (se queda como el selector)"))
+    backup = rk.save(model, args.model)
+    print(f"Modelo:     {args.model}" + (f" (el anterior queda en {backup})" if backup else ""))
+    if model.better:
+        print("Se usará por defecto en select y export (desactívalo con --no-model).")
+    else:
+        print("No se usará por defecto hasta que mejore al selector; pruébalo con "
+              f"--model {args.model}")
     return 0
 
 
@@ -640,6 +736,15 @@ def build_parser() -> argparse.ArgumentParser:
     dt.add_argument("--merge", help="otro ratings.jsonl (p. ej. del Mac) para añadir")
     dt.add_argument("--dataset", default=DATASET, help=f"archivo del dataset ({DATASET})")
     dt.set_defaults(func=cmd_dataset)
+
+    from dronereel.ranker import DEFAULT_MODEL
+    tr = sub.add_parser("train", help="aprende tu gusto de las valoraciones (ligero, en la Pi)")
+    tr.add_argument("--dataset", default=DATASET, help=f"archivo del dataset ({DATASET})")
+    tr.add_argument("--model", default=DEFAULT_MODEL, help=f"dónde guardar el modelo ({DEFAULT_MODEL})")
+    tr.set_defaults(func=cmd_train)
+    for parser in (se, ex):
+        parser.add_argument("--model", help="usar este modelo (aunque no esté marcado como mejor)")
+        parser.add_argument("--no-model", action="store_true", help="solo el selector hecho a mano")
     return p
 
 

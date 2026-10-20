@@ -139,6 +139,34 @@ dataset son números y referencias; los clips siguen en `~/dronereel-output/`.
 Si valoras en dos equipos (Pi y Mac), une los archivos sin duplicados:
 `dataset --merge /ruta/al/otro/ratings.jsonl`.
 
+### Aprender tu gusto
+
+```bash
+.venv/bin/python -m dronereel train            # entrena y compara antes/después
+.venv/bin/python -m dronereel select VIDEO.MP4  # usa tu modelo si mejora; muestra qué
+                                                # habría elegido sin él
+.venv/bin/python -m dronereel export VIDEO.MP4 --no-model   # solo el selector a mano
+```
+
+No entrena desde cero ni nada pesado: parte del selector hecho a mano y
+aprende una **corrección** (unos pocos números por característica) a partir de
+pares de preferencia: "la alternativa 2 era mejor", "acepto este clip",
+"yo habría elegido este tramo", aceptados frente a rechazados. Con pocos datos
+la corrección se queda cerca de cero. Segundos en la Pi; el modelo es un JSON
+de ~1 KB que funciona igual en el Mac (`~/.local/share/dronereel/model.json`;
+el anterior se guarda con fecha al reentrenar).
+
+**Antes y después**: `train` deja fuera vídeos enteros, entrena con el resto y
+mide qué porcentaje de tus preferencias en esos vídeos acierta el selector
+solo y con tu modelo. El modelo se usa por defecto únicamente si mejora con al
+menos 5 vídeos y 30 pares de prueba; si no, solo con `--model`.
+
+Comprobado con un usuario simulado al que le gusta volar cerca: con 8 vídeos
+valorados pasa del 46 % al 99 % de aciertos en vídeos no vistos, y elige
+tramos mejores en vídeos nuevos. Con un usuario cuyo gusto coincide con el
+selector, no aprende nada y no se marca como mejor. Con valoraciones reales
+aún no se ha probado.
+
 ## En un Mac
 
 ```bash

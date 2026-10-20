@@ -168,3 +168,10 @@ def numbered(tmp_path_factory):
                                "open-gop=1:bframes=3:b-adapt=0",
                                "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1"], audio=False)
     return {"dir": str(src), "h264": h264, "hevc": hevc, "hevc_open": hevc_open}
+
+
+@pytest.fixture(autouse=True)
+def _no_personal_model(tmp_path, monkeypatch):
+    """Tests never pick up the user's trained model (F7) from ~/.local/share."""
+    from dronereel import ranker
+    monkeypatch.setattr(ranker, "DEFAULT_MODEL", str(tmp_path / "no-model.json"))

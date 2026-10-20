@@ -89,6 +89,7 @@ class SelectConfig:
     pre_roll: float = 2.0                     # context before the peak, s
     post_roll: float = 2.0                    # context after the peak, s
     edge_slack: float = 1.0                   # how far an edge may move to a calm moment
+    edge_max_loss: float = 0.01               # score a calmer edge may cost, at most
     weights: dict = field(default_factory=lambda: {
         "exposure": 1.0, "clarity": 1.0, "stability": 1.5, "dynamism": 1.0,
         "manoeuvre": 1.0, "detail": 1.0, "proximity": 0.3})
@@ -218,8 +219,9 @@ def _moving_mean(x: np.ndarray, k: int) -> np.ndarray:
 class _Scorer:
     """Every window of one shot, scored in vectorised passes per length."""
 
-    def __init__(self, a: Analysis, cfg: SelectConfig):
+    def __init__(self, a: Analysis, cfg: SelectConfig, ranker=None):
         self.a, self.cfg, self.fps = a, cfg, a.fps
+        self.ranker = ranker                    # F7: learned correction, or None
         self.comp = components(a)
         self.q = quality(self.comp, cfg.weights)
         one_s = max(1, int(round(a.fps)))
@@ -290,6 +292,10 @@ class _Scorer:
         parts = {**{k: mean[k] for k in COMPONENTS}, "quality": mean["q"],
                  "worst_second": worst, "variety": variety, "empty": mean["empty"],
                  "missing_context": missing}
+        if self.ranker is not None:
+            corr = self.ranker.correction_parts(parts, L / fps) * np.ones(len(s))
+            total = total + corr
+            parts["model"] = corr
         return total, parts, (s + peak_off, s + hl_first, s + hl_last + 1)
 
     def window(self, s: int, L: int, lo_len: int, hi_len: int) -> Window:
@@ -306,8 +312,9 @@ def _calm_edge(jerk: np.ndarray, options: Iterable[int], prefer: int) -> int:
     return min(options, key=lambda i: (round(float(j[min(i, len(j) - 1)]), 6), abs(i - prefer)))
 
 
-def select(a: Analysis, cfg: Optional[SelectConfig] = None) -> Selection:
-    """The single best continuous window of ``a``. Deterministic."""
+def select(a: Analysis, cfg: Optional[SelectConfig] = None, ranker=None) -> Selection:
+    """The single best continuous window of ``a``. Deterministic. ``ranker``
+    (F7) adds your learned correction to every window's score."""
     cfg = cfg or SelectConfig()
     if cfg.min_duration <= 0:
         raise ValueError("min_duration debe ser > 0")
@@ -315,7 +322,7 @@ def select(a: Analysis, cfg: Optional[SelectConfig] = None) -> Selection:
         raise ValueError("max_duration debe ser ≥ min_duration")
     if a.count < 2:
         raise ValueError("El análisis no tiene muestras suficientes")
-    sc = _Scorer(a, cfg)
+    sc = _Scorer(a, cfg, ranker)
     warnings = []
     pool = []                      # (score, start, L, lo_len, hi_len)
     ranges = shots(a)
@@ -388,11 +395,14 @@ def _refine(sc, a, cfg, st, L, lo_len, hi_len, scored: Window) -> Window:
     e1 = _calm_edge(jerk, [e - 1 for e in ends], e0 - 1) + 1 if ends else e0
     if (s1, e1) == (st, e0):
         return scored
-    return sc.window(s1, e1 - s1, lo_len, hi_len)
+    moved = sc.window(s1, e1 - s1, lo_len, hi_len)
+    # Uncapped, calmer edges cost up to 0.05 and dropped the pick below the
+    # runner-up on simulated footage (F7): calm edges are worth a little only.
+    return moved if moved.score >= scored.score - cfg.edge_max_loss else scored
 
 
 def describe(a: Analysis, start: float, end: float,
-             cfg: Optional[SelectConfig] = None) -> Window:
+             cfg: Optional[SelectConfig] = None, ranker=None) -> Window:
     """Score an arbitrary ``[start, end)`` the way :func:`select` scores its
     windows — e.g. one the user picked by hand — so it can be compared with
     the windows the selector preferred. It may cross a cut; that is the
@@ -400,7 +410,7 @@ def describe(a: Analysis, start: float, end: float,
     cfg = cfg or SelectConfig()
     s = max(0, min(a.count - 1, int(round(start * a.fps))))
     e = max(s + 1, min(a.count, int(round(end * a.fps))))
-    sc = _Scorer(a, cfg)
+    sc = _Scorer(a, cfg, ranker)
     lo = max(1, int(round(cfg.min_duration * a.fps)))
     hi = int(round(cfg.max_duration * a.fps)) if cfg.max_duration else a.count
     return sc.window(s, e - s, min(lo, e - s), max(hi, e - s))

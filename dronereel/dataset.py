@@ -103,12 +103,14 @@ def _base(kind: str, source: dict, selection: Optional[dict], note: str) -> dict
 
 def rating_entry(record: dict, record_path: str, score: Optional[int] = None,
                  verdict: Optional[str] = None, prefer: Optional[int] = None,
-                 note: str = "", features: Optional[dict] = None) -> dict:
+                 note: str = "", features: Optional[dict] = None,
+                 selector_score: Optional[float] = None) -> dict:
     """An entry about the clip described by an export ``record`` (the JSON
     that ``export`` writes beside the clip). ``prefer`` is the 1-based
     position in the selector's list: 1 is the clip itself, 2 the first
     alternative. ``features``: the clip window's, when the record has none
-    (a range given by hand)."""
+    (a range given by hand), with ``selector_score`` the selector's score
+    for that window."""
     if score is None and verdict is None and prefer is None:
         raise DatasetError("Indica al menos una puntuación, aceptar/rechazar o una alternativa")
     if score is not None and not 1 <= int(score) <= 5:
@@ -125,14 +127,15 @@ def rating_entry(record: dict, record_path: str, score: Optional[int] = None,
             raise DatasetError(f"Alternativa {prefer} no existe (hay {n} en la lista)")
     entry = _base("rating", {k: record["source"].get(k) for k in
                              ("path", "sha256", "duration", "fps")}, selection, note)
-    clip_features = features
+    clip_features, clip_score = features, selector_score
     if clip_features is None and selection and selection.get("best"):
         clip_features = dict(selection["best"].get("parts") or {})
+        clip_score = selection["best"].get("score")
     entry.update({
         "clip": {"path": exp.get("path"), "record": os.path.abspath(record_path),
                  "start": exp.get("start"), "end": exp.get("end"),
                  "requested": exp.get("requested"), "mode": exp.get("mode"),
-                 "features": clip_features},
+                 "features": clip_features, "score": clip_score},
         "score": int(score) if score is not None else None,
         "verdict": verdict,
         "prefer": int(prefer) if prefer is not None else None,
@@ -143,7 +146,7 @@ def rating_entry(record: dict, record_path: str, score: Optional[int] = None,
 
 def manual_entry(source: dict, start: float, end: float, features: dict,
                  selection: Optional[dict], score: Optional[int] = None,
-                 note: str = "") -> dict:
+                 note: str = "", selector_score: Optional[float] = None) -> dict:
     """"This is the stretch I would pick": ``[start, end)`` of the source,
     with its features and the selector's own candidates for comparison."""
     if not 0 <= start < end:
@@ -152,7 +155,7 @@ def manual_entry(source: dict, start: float, end: float, features: dict,
         raise DatasetError("La puntuación va de 1 a 5")
     entry = _base("manual", source, selection, note)
     entry.update({"segment": {"start": round(start, 3), "end": round(end, 3),
-                              "features": features},
+                              "features": features, "score": selector_score},
                   "score": int(score) if score is not None else None})
     return entry
 
