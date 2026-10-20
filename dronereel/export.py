@@ -198,16 +198,17 @@ def _audio_args(media: MediaInfo, cfg: ExportConfig) -> list:
     return ["-map", "0:a:0", "-c:a", "copy"]
 
 
-def _color_args(media: MediaInfo) -> list:
+def _color_args(media: MediaInfo, tags: Optional[dict] = None) -> list:
+    """The source's colour tags, or ``tags`` when the colour was converted."""
     args = []
     for attr, flag in COLOR_TAGS:
-        value = getattr(media, attr, "unknown")
+        value = (tags or {}).get(attr) if tags else getattr(media, attr, "unknown")
         if value and value not in ("unknown", "reserved"):
             args += [flag, value]
     return args
 
 
-def _encoder_args(media: MediaInfo, cfg: ExportConfig) -> list:
+def _encoder_args(media: MediaInfo, cfg: ExportConfig, tags: Optional[dict] = None) -> list:
     enc = ENCODERS[cfg.codec]
     args = ["-c:v", enc, "-pix_fmt", PIX_FMT[int(cfg.bit_depth)],
             "-crf", f"{cfg.crf:g}", "-preset", cfg.preset]
@@ -216,7 +217,7 @@ def _encoder_args(media: MediaInfo, cfg: ExportConfig) -> list:
         if cfg.x265_params:
             params += ":" + cfg.x265_params
         args += ["-x265-params", params, "-tag:v", "hvc1"]
-    return args + _color_args(media)
+    return args + _color_args(media, tags)
 
 
 def _run(cmd: list, total: float, progress) -> None:
@@ -253,12 +254,16 @@ def plan_copy(media: MediaInfo, start: float, end: float, fps: float) -> tuple:
 
 def export_segment(media: MediaInfo, start: float, end: float, output_dir: str,
                    cfg: Optional[ExportConfig] = None, needs_reencode: bool = False,
-                   name: Optional[str] = None, progress=None) -> ExportResult:
+                   name: Optional[str] = None, progress=None,
+                   video_filter: Optional[str] = None,
+                   color_tags: Optional[dict] = None) -> ExportResult:
     """Write ``[start, end)`` of ``media`` (seconds) as one file in
     ``output_dir``. ``needs_reencode`` says the picture will change (colour,
-    reframing), which rules out ``copy``."""
+    reframing), which rules out ``copy``; a ``video_filter`` implies it.
+    ``color_tags`` replace the source's tags when the filter converts colour."""
     cfg = cfg or ExportConfig()
     cfg.validate()
+    needs_reencode = needs_reencode or bool(video_filter)
     if not (0 <= start < end):
         raise ValueError(f"Segmento no válido: {start}–{end}")
     if media.duration and start >= media.duration:
@@ -316,7 +321,8 @@ def export_segment(media: MediaInfo, start: float, end: float, output_dir: str,
                    "-ss", f"{seek:.6f}", "-i", media.path, "-map", "0:v:0",
                    *_audio_args(media, cfg), "-frames:v", str(n),
                    "-t", f"{(n + 0.5) / fps:.6f}", "-fps_mode", "passthrough",
-                   *_encoder_args(media, cfg), "-map_metadata", "0",
+                   *(["-vf", video_filter] if video_filter else []),
+                   *_encoder_args(media, cfg, color_tags), "-map_metadata", "0",
                    "-movflags", "+faststart", produced]
             _run(cmd, b - a, progress)
         if not os.path.exists(produced):

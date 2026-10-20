@@ -4,7 +4,8 @@
     probe VIDEO [...]       metadata, evidence, and the colour decision
     analyze VIDEO [...]     per-sample measurements, cached (F2)
     select VIDEO [...]      the one continuous segment to export, and why (F3)
-    export VIDEO [...]      write that one segment to its own file (F4)
+    export VIDEO [...]      write that one segment to its own file (F4, colour F5)
+    color VIDEO [...]       original vs corrected stills, to tune the colour (F5)
 
 ``probe`` only reads. ``--camera`` and ``--profile`` are how a profile is
 confirmed by hand until a camera's identification rules are verified.
@@ -212,6 +213,79 @@ def cmd_select(args) -> int:
     return 0
 
 
+_COLOR_FLAGS = (("exposure", "exposure_ev"), ("contrast", "contrast"),
+                ("saturation", "saturation"), ("temperature", "wb_temperature"),
+                ("tint", "wb_tint"), ("highlights", "highlight_protection"))
+
+
+def _color_plan(args, media, decision, cameras, raw):
+    """``ColorPlan`` or ``None`` (keep the original colour). Raises
+    ``color.ColorError`` for a request that cannot be honoured safely."""
+    from dronereel import color
+
+    flags = {key: getattr(args, name) for name, key in _COLOR_FLAGS
+             if getattr(args, name, None) is not None}
+    if getattr(args, "no_color", False):
+        return None
+    camera = cameras.get(decision.camera) if decision.camera else None
+    values = {}
+    if decision.confirmed and camera is not None:
+        values.update(camera.color)
+    values.update(raw.get("color") or {})
+    values.update(flags)
+    settings = color.ColorSettings.from_dict(values)
+    cplan = color.plan(media, decision, camera, settings, lut_override=args.lut)
+    if cplan is None and not decision.confirmed and (flags or raw.get("color")):
+        print("AVISO: perfil de color no confirmado; los ajustes de color se ignoran y se "
+              "conserva el color original. Confírmalo con --camera y --profile.")
+    return cplan
+
+
+def _describe_color(cplan) -> str:
+    if cplan is None:
+        return "se conserva el color original"
+    what = (f"LUT oficial {os.path.basename(cplan.source_lut)}" if cplan.source_lut
+            else "sin LUT de conversión")
+    s = cplan.settings
+    adj = "ajustes neutros" if s.neutral else (
+        f"exposición {s.exposure_ev:+g} EV, contraste {s.contrast:g}, saturación "
+        f"{s.saturation:g}, temperatura {s.wb_temperature:+g}, tinte {s.wb_tint:+g}, "
+        f"protección de altas luces {s.highlight_protection:g}")
+    return f"{cplan.camera}/{cplan.profile} → Rec.709: {what}, {adj}"
+
+
+def cmd_color(args) -> int:
+    from dronereel import color
+    from dronereel.safety import assert_unchanged, fingerprint, output_path
+
+    media = probe_media(args.video)
+    try:
+        raw = _read_config(args.config)
+        cameras = _cameras(args)
+        decision = profiles.decide(media, cameras, camera=args.camera, profile=args.profile)
+        cplan = _color_plan(args, media, decision, cameras, raw)
+    except (_ConfigError, profiles.ProfileError, color.ColorError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    if cplan is None:
+        print("Nada que comparar: " + ("perfil no confirmado; " if not decision.confirmed
+                                       else "perfil sin transformación y ajustes neutros; ")
+              + "se conserva el color original.")
+        return 0
+    original = fingerprint(media.path)
+    times = args.at or [media.duration * f for f in (0.25, 0.5, 0.75)]
+    stem = os.path.splitext(os.path.basename(media.path))[0]
+    print(f"Color:      {_describe_color(cplan)}")
+    for w in cplan.warnings:
+        print(f"  AVISO: {w}")
+    for t in times:
+        path = output_path(args.output, f"{stem}_color_{t:07.2f}.png", [media.path])
+        color.compare_image(media, cplan, t, path)
+        print(f"Comparación {t:.2f} s: {path}  (izquierda original, derecha corregido)")
+    assert_unchanged(original)
+    return 0
+
+
 def cmd_export(args) -> int:
     from dronereel import analyze as an
     from dronereel import export as ex
@@ -236,8 +310,19 @@ def cmd_export(args) -> int:
         print(f"Error en la configuración: {e}", file=sys.stderr)
         return 2
 
-    extra = {"color": {"camera": decision.camera, "profile": decision.profile,
-                       "profile_source": decision.profile_source, "applied": False}}
+    from dronereel import color
+    try:
+        cplan = _color_plan(args, media, decision, cameras, raw)
+    except (color.ColorError, profiles.ProfileError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    if cplan is not None and ecfg.mode == "copy":
+        print("Error: corregir el color exige recodificar; quita --mode copy o usa --no-color.",
+              file=sys.stderr)
+        return 2
+    extra = {"color": cplan.to_dict() if cplan else
+             {"camera": decision.camera, "profile": decision.profile,
+              "profile_source": decision.profile_source, "applied": False}}
     if (args.start is None) != (args.end is None):
         print("Error: --start y --end van juntos", file=sys.stderr)
         return 2
@@ -256,15 +341,18 @@ def cmd_export(args) -> int:
         extra["selection"] = sel.log_record(
             choice, result, media.path, an.content_key(media.path, result.fps, result.width))
 
-    if decision.apply_color:
-        print("AVISO: el perfil confirmado pide transformar el color, pero eso llega en la F5; "
-              "esta exportación conserva el color original.")
-    if ecfg.mode == "reencode":
+    print(f"Color:      {_describe_color(cplan)}")
+    if cplan:
+        for w in cplan.warnings:
+            print(f"  AVISO: {w}")
+    if ecfg.mode == "reencode" or cplan is not None:
         for note in ex.reencode_notes(media, start, end):
             print(note)
     try:
-        res = ex.export_segment(media, start, end, args.output, ecfg,
-                                progress=ex.print_progress)
+        res = ex.export_segment(
+            media, start, end, args.output, ecfg, progress=ex.print_progress,
+            video_filter=cplan.video_filter(ecfg.bit_depth) if cplan else None,
+            color_tags=cplan.output_tags() if cplan else None)
     except (ex.ExportError, ValueError) as e:
         print(f"\nError: {e}", file=sys.stderr)
         return 2
@@ -278,8 +366,25 @@ def cmd_export(args) -> int:
     for w in res.warnings:
         print(f"  AVISO: {w}")
     print(f"Registro:   {record}")
+    if cplan:
+        try:
+            cmp_path = os.path.splitext(res.path)[0] + "_comparacion.png"
+            color.compare_image(media, cplan, (res.start + res.end) / 2, cmp_path)
+            print(f"Comparación: {cmp_path}  (izquierda original, derecha corregido)")
+        except color.ColorError as e:
+            print(f"  AVISO: no se pudo generar la comparación: {e}")
     print("Original:   sin cambios (huella SHA-256 verificada)")
     return 0
+
+
+def _add_color_args(p) -> None:
+    p.add_argument("--lut", help="LUT oficial .cube (sustituye a la del YAML de la cámara)")
+    p.add_argument("--exposure", type=float, help="exposición en EV (-3 a 3)")
+    p.add_argument("--contrast", type=float, help="contraste (0.5 a 2; 1 = igual)")
+    p.add_argument("--saturation", type=float, help="saturación (0 a 2; 1 = igual)")
+    p.add_argument("--temperature", type=float, help="balance de blancos: -100 frío a 100 cálido")
+    p.add_argument("--tint", type=float, help="tinte: -100 verde a 100 magenta")
+    p.add_argument("--highlights", type=float, help="protección de altas luces (0 a 1)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -340,7 +445,20 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"carpeta de salida (por defecto {DEFAULT_OUTPUT_DIR})")
     ex.add_argument("--software", action="store_true", help="no usar el decodificador por hardware")
     ex.add_argument("--no-cache", action="store_true", help="medir de nuevo aunque haya caché")
+    _add_color_args(ex)
+    ex.add_argument("--no-color", action="store_true", help="no corregir el color")
     ex.set_defaults(func=cmd_export)
+
+    co = sub.add_parser("color", help="compara original y corregido en fotogramas sueltos")
+    co.add_argument("video")
+    co.add_argument("--camera", help="cámara de origen (p. ej. avata2)")
+    co.add_argument("--profile", help="perfil de color confirmado (p. ej. dlog_m)")
+    co.add_argument("--at", type=float, action="append", help="instante en s (repetible)")
+    co.add_argument("--config", help="YAML con sección 'color:'")
+    co.add_argument("--output", default=DEFAULT_OUTPUT_DIR,
+                    help=f"carpeta de salida (por defecto {DEFAULT_OUTPUT_DIR})")
+    _add_color_args(co)
+    co.set_defaults(func=cmd_color)
     return p
 
 

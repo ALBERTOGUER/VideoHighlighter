@@ -87,7 +87,37 @@ cambiado.
 
 Siempre: mismos fps que el original (sin remuestrear), audio original copiado
 si existe, etiquetas de color del original, sin música, transiciones ni
-títulos. El color (F5) todavía no se aplica.
+títulos.
+
+### Color (D-Log M → Rec.709)
+
+Solo con el perfil **confirmado** (`--camera avata2 --profile dlog_m`) y la
+**LUT oficial de DJI** para esa cámara (`.cube`, descárgala de dji.com). Ponla
+en el campo `lut:` del YAML de la cámara (una ruta relativa se lee desde el
+YAML) o pásala con `--lut`.
+
+```bash
+# Probar ajustes en fotogramas sueltos (rápido): PNG original | corregido
+.venv/bin/python -m dronereel color VIDEO.MP4 --camera avata2 --profile dlog_m \
+    --at 42 --exposure 0.3 --highlights 0.5
+# Exportar con color (recodifica; deja también un PNG de comparación)
+.venv/bin/python -m dronereel export VIDEO.MP4 --camera avata2 --profile dlog_m
+```
+
+Ajustes (YAML `color:` o en la línea de comandos): `--exposure` (EV),
+`--contrast`, `--saturation`, `--temperature` (−100 frío a 100 cálido),
+`--tint` (−100 verde a 100 magenta), `--highlights` (0 a 1: transición suave
+a blanco en vez de recorte). Todo se reduce a **una LUT 3D** aplicada por
+ffmpeg en una pasada: reproducible e idéntica en todos los fotogramas, sin
+modelos generativos. Con ajustes neutros se usa la LUT oficial tal cual.
+
+Reglas: sin perfil confirmado no se aplica nada (ni LUT ni ajustes); una LUT
+de conversión nunca se aplica a un perfil `normal`; un perfil logarítmico sin
+LUT configurada es un error (para exportar sin color: `--no-color`). En la Pi,
+el color añade ~7 % al tiempo de recodificación (0,86 fps en 4K).
+
+Limitaciones: la protección de altas luces no recupera lo que la LUT oficial
+ya recorta; el balance de blancos es una aproximación por ganancias de canal.
 
 `probe` solo lee el archivo. El color se transforma **únicamente** con un
 perfil confirmado: por ti (`--camera` + `--profile`) o por una regla marcada

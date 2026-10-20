@@ -24,7 +24,8 @@ color_profiles:
   dlog_m:
     transform: lut
     # LUT oficial de DJI "D-Log M a Rec.709" PARA AVATA 2 (descarga de dji.com).
-    # Ruta al archivo .cube; vacía = no se puede aplicar color todavía.
+    # Ruta al archivo .cube (relativa = desde este YAML); vacía = no se puede
+    # aplicar color: exportar con este perfil dará error salvo con --no-color.
     lut: null
     output: rec709
     identify:
@@ -36,7 +37,10 @@ recording:
   resolutions: []
   fps: []
 
-# Ajustes de color (fase F5). Valores neutros = sin cambio.
+# Ajustes de color tras la LUT (F5). Valores neutros = sin cambio.
+# exposure_ev -3..3 · contrast 0.5..2 · saturation 0..2 ·
+# wb_temperature -100 (frío)..100 (cálido) · wb_tint -100 (verde)..100 (magenta) ·
+# highlight_protection 0..1. Solo se aplican con el perfil confirmado.
 color:
   exposure_ev: 0.0
   contrast: 1.0
