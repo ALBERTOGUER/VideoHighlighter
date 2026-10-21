@@ -4,7 +4,9 @@
     probe VIDEO [...]       metadata, evidence, and the colour decision
     analyze VIDEO [...]     per-sample measurements, cached (F2)
     select VIDEO [...]      the one continuous segment to export, and why (F3)
-    export VIDEO [...]      write that one segment to its own file (F4, colour F5)
+    export VIDEO [...]      write that one segment to its own file (F4, colour F5,
+                            vertical 9:16 F8)
+    vertical VIDEO [...]    preview of the 9:16 window, nothing exported (F8)
     color VIDEO [...]       original vs corrected stills, to tune the colour (F5)
     rate RECORD|VIDEO [...] add a judgement to your ratings dataset (F6)
     review [...]            rate the exported clips not rated yet, one by one (F6)
@@ -146,10 +148,37 @@ def _read_config(path) -> dict:
         raise _ConfigError(e) from None
 
 
+_SECTIONS = {"select", "export", "color", "vertical"}
+
+
+def _vertical_config(args, raw: dict):
+    from dronereel import vertical as vt
+    values = dict(raw.get("vertical") or {})
+    for key, value in (("follow", getattr(args, "follow", None)),
+                       ("height", getattr(args, "vertical_height", None))):
+        if value is not None:
+            values[key] = value
+    try:
+        return vt.VerticalConfig.from_dict(values)
+    except (ValueError, TypeError) as e:
+        raise _ConfigError(e) from None
+
+
+def _describe_vertical(vpath) -> str:
+    st = vpath.stats()
+    how = {"smooth": "sigue lo que destaca, suavizado", "fixed": "posición fija, la mejor del clip",
+           "center": "recorte central"}[vpath.follow]
+    size = f"{vpath.crop_w}x{vpath.crop_h}"
+    if (vpath.out_w, vpath.out_h) != (vpath.crop_w, vpath.crop_h):
+        size += f" → {vpath.out_w}x{vpath.out_h}"
+    return (f"9:16 {size}, {how}; recorrido {st['travel'] * 100:.0f} % del ancho, "
+            f"velocidad máx. {st['max_speed'] * 100:.0f} % del ancho/s")
+
+
 def _select_config(args, raw: dict):
     from dronereel import selector as sel
     # A file with sections uses 'select:'; a flat file is all selection options.
-    raw = dict((raw.get("select") or {}) if {"select", "export"} & set(raw) else raw)
+    raw = dict((raw.get("select") or {}) if _SECTIONS & set(raw) else raw)
     for key, value in (("min_duration", args.min), ("max_duration", args.max),
                        ("pre_roll", args.pre), ("post_roll", args.post)):
         if value is not None:
@@ -363,6 +392,7 @@ def cmd_export(args) -> int:
                 export_raw[key] = value
         ecfg = ex.ExportConfig.from_dict(export_raw)
         scfg = _select_config(args, raw)
+        vcfg = _vertical_config(args, raw)
         model, why = _ranker(args)
     except (_ConfigError, ValueError, TypeError) as e:
         print(f"Error en la configuración: {e}", file=sys.stderr)
@@ -377,6 +407,10 @@ def cmd_export(args) -> int:
     if cplan is not None and ecfg.mode == "copy":
         print("Error: corregir el color exige recodificar; quita --mode copy o usa --no-color.",
               file=sys.stderr)
+        return 2
+    formats = ["horizontal", "vertical"] if args.format == "both" else [args.format]
+    if "vertical" in formats and ecfg.mode == "copy":
+        print("Error: el 9:16 exige recodificar; quita --mode copy.", file=sys.stderr)
         return 2
     extra = {"color": cplan.to_dict() if cplan else
              {"camera": decision.camera, "profile": decision.profile,
@@ -405,19 +439,58 @@ def cmd_export(args) -> int:
     if cplan:
         for w in cplan.warnings:
             print(f"  AVISO: {w}")
-    if ecfg.mode == "reencode" or cplan is not None:
-        for note in ex.reencode_notes(media, start, end):
+    twin = None
+    for fmt in formats:
+        vpath = None
+        if fmt == "vertical":
+            from dronereel import vertical as vt
+            try:
+                vpath = vt.plan(media, start, end, vcfg, prefer_hardware=not args.software)
+            except (vt.VerticalError, ValueError) as e:
+                print(f"Error: {e}", file=sys.stderr)
+                return 2
+            print(f"Vertical:   {_describe_vertical(vpath)}")
+        res, record = _export_one(args, media, start, end, ecfg, cplan, extra, vpath, twin)
+        if res is None:
+            return 2
+        # The vertical twin holds exactly the frames the horizontal file
+        # holds, which a stream copy may have widened to keyframes.
+        twin, start, end = record, res.start, res.end
+    print("Original:   sin cambios (huella SHA-256 verificada)")
+    return 0
+
+
+def _export_one(args, media, start, end, ecfg, cplan, extra, vpath=None, twin=None):
+    """Write one file of ``[start, end)``: horizontal, or vertical when
+    ``vpath`` is given. Returns ``(result, record_path)`` or ``(None, None)``."""
+    from dronereel import color
+    from dronereel import export as ex
+
+    filters = []
+    if vpath is not None:
+        filters.append(vpath.video_filter(media.fps, end - start))
+    if cplan is not None:
+        filters.append(cplan.video_filter(ecfg.bit_depth))
+    if ecfg.mode == "reencode" or filters:
+        pixels = vpath.out_w * vpath.out_h if vpath is not None else None
+        for note in ex.reencode_notes(media, start, end, pixels, ecfg):
             print(note)
     try:
         res = ex.export_segment(
             media, start, end, args.output, ecfg, progress=ex.print_progress,
-            video_filter=cplan.video_filter(ecfg.bit_depth) if cplan else None,
-            color_tags=cplan.output_tags() if cplan else None)
+            video_filter=",".join(filters) or None,
+            color_tags=cplan.output_tags() if cplan else None,
+            suffix="_vertical" if vpath is not None else "")
     except (ex.ExportError, ValueError) as e:
         print(f"\nError: {e}", file=sys.stderr)
-        return 2
+        return None, None
     print(file=sys.stderr)
-    record = ex.write_record(res, media, extra)
+    record_extra = dict(extra)
+    if vpath is not None:
+        record_extra["vertical"] = vpath.to_dict()
+        if twin:
+            record_extra["twin"] = twin
+    record = ex.write_record(res, media, record_extra)
     how = ("copia directa, sin recomprimir" if res.mode == "copy"
            else f"recodificado {ecfg.codec} {ecfg.bit_depth} bits, crf {ecfg.crf:g}")
     print(f"Exportado:  {res.path}")
@@ -426,14 +499,63 @@ def cmd_export(args) -> int:
     for w in res.warnings:
         print(f"  AVISO: {w}")
     print(f"Registro:   {record}")
-    if cplan:
+    if vpath is not None:
+        from dronereel import vertical as vt
+        try:
+            prev = os.path.splitext(res.path)[0] + "_encuadre.png"
+            vt.preview_image(media, vpath, res.start, res.end, prev)
+            print(f"Encuadre:   {prev}  (ventana 9:16 sobre el original)")
+        except vt.VerticalError as e:
+            print(f"  AVISO: no se pudo generar la vista del encuadre: {e}")
+    elif cplan:
         try:
             cmp_path = os.path.splitext(res.path)[0] + "_comparacion.png"
             color.compare_image(media, cplan, (res.start + res.end) / 2, cmp_path)
             print(f"Comparación: {cmp_path}  (izquierda original, derecha corregido)")
         except color.ColorError as e:
             print(f"  AVISO: no se pudo generar la comparación: {e}")
-    print("Original:   sin cambios (huella SHA-256 verificada)")
+    return res, record
+
+
+def cmd_vertical(args) -> int:
+    from dronereel import vertical as vt
+    from dronereel.safety import assert_unchanged, fingerprint, output_path
+
+    media = probe_media(args.video)
+    try:
+        raw = _read_config(args.config)
+        vcfg = _vertical_config(args, raw)
+    except _ConfigError as e:
+        print(f"Error en la configuración: {e}", file=sys.stderr)
+        return 2
+    if (args.start is None) != (args.end is None):
+        print("Error: --start y --end van juntos", file=sys.stderr)
+        return 2
+    if args.start is not None:
+        start, end = args.start, args.end
+    else:
+        try:
+            scfg = _select_config(args, raw)
+            model, _ = _ranker(args)
+            _, choice = _run_selection(args, media, scfg, model)
+        except (_ConfigError, ValueError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 2
+        start, end = choice.best.start, choice.best.end
+    original = fingerprint(media.path)
+    try:
+        vpath = vt.plan(media, start, end, vcfg, prefer_hardware=not args.software)
+        stem = os.path.splitext(os.path.basename(media.path))[0]
+        png = output_path(args.output, f"{stem}_{start:07.2f}-{end:07.2f}_encuadre.png",
+                          [media.path])
+        vt.preview_image(media, vpath, start, end, png)
+    except (vt.VerticalError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    assert_unchanged(original)
+    print(f"Segmento:   {start:.2f} s → {end:.2f} s")
+    print(f"Vertical:   {_describe_vertical(vpath)}")
+    print(f"Encuadre:   {png}  (ventana 9:16 sobre el original; no se ha exportado nada)")
     return 0
 
 
@@ -524,7 +646,9 @@ def cmd_review(args) -> int:
     from dronereel import dataset as ds
 
     done = ds.rated_clips(ds.read(args.dataset))
-    pending = [(p, r) for p, r in ds.find_records(args.output) if p not in done]
+    # A vertical twin is the same segment as its horizontal record: rate once.
+    pending = [(p, r) for p, r in ds.find_records(args.output)
+               if p not in done and not r.get("twin")]
     if not pending:
         print(f"No hay clips sin valorar en {args.output}.")
         return 0
@@ -631,6 +755,13 @@ def _add_color_args(p) -> None:
     p.add_argument("--highlights", type=float, help="protección de altas luces (0 a 1)")
 
 
+def _add_vertical_args(p) -> None:
+    p.add_argument("--follow", choices=["smooth", "fixed", "center"],
+                   help="9:16: seguir lo que destaca (smooth), posición fija o centro")
+    p.add_argument("--vertical-height", type=int,
+                   help="9:16: alto de salida (0 = nativo, sin reescalar; p. ej. 1920)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="dronereel", description="DroneReel-AI")
     p.add_argument("--profiles-dir", action="append",
@@ -691,6 +822,9 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--no-cache", action="store_true", help="medir de nuevo aunque haya caché")
     _add_color_args(ex)
     ex.add_argument("--no-color", action="store_true", help="no corregir el color")
+    ex.add_argument("--format", choices=["horizontal", "vertical", "both"], default="horizontal",
+                    help="horizontal (original), vertical 9:16, o ambos del MISMO segmento")
+    _add_vertical_args(ex)
     ex.set_defaults(func=cmd_export)
 
     co = sub.add_parser("color", help="compara original y corregido en fotogramas sueltos")
@@ -703,6 +837,22 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"carpeta de salida (por defecto {DEFAULT_OUTPUT_DIR})")
     _add_color_args(co)
     co.set_defaults(func=cmd_color)
+
+    ve = sub.add_parser("vertical", help="vista previa del encuadre 9:16 (no exporta nada)")
+    ve.add_argument("video")
+    ve.add_argument("--start", type=float, help="inicio en s (sin él, lo elige 'select')")
+    ve.add_argument("--end", type=float, help="fin en s (con --start)")
+    ve.add_argument("--min", type=float, help="duración mínima en s (10)")
+    ve.add_argument("--max", type=float, help="duración máxima en s (30; 0 = sin límite)")
+    ve.add_argument("--pre", type=float, help="contexto antes del mejor momento, s (2)")
+    ve.add_argument("--post", type=float, help="contexto después del mejor momento, s (2)")
+    ve.add_argument("--config", help="YAML con secciones 'select:' y 'vertical:'")
+    ve.add_argument("--output", default=DEFAULT_OUTPUT_DIR,
+                    help=f"carpeta de salida (por defecto {DEFAULT_OUTPUT_DIR})")
+    ve.add_argument("--software", action="store_true", help="no usar el decodificador por hardware")
+    ve.add_argument("--no-cache", action="store_true", help="medir de nuevo aunque haya caché")
+    _add_vertical_args(ve)
+    ve.set_defaults(func=cmd_vertical)
 
     from dronereel.dataset import DEFAULT_PATH as DATASET
     ra = sub.add_parser("rate", help="guarda una valoración en tu dataset")
@@ -742,7 +892,7 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--dataset", default=DATASET, help=f"archivo del dataset ({DATASET})")
     tr.add_argument("--model", default=DEFAULT_MODEL, help=f"dónde guardar el modelo ({DEFAULT_MODEL})")
     tr.set_defaults(func=cmd_train)
-    for parser in (se, ex):
+    for parser in (se, ex, ve):
         parser.add_argument("--model", help="usar este modelo (aunque no esté marcado como mejor)")
         parser.add_argument("--no-model", action="store_true", help="solo el selector hecho a mano")
     return p

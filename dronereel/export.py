@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -64,6 +65,7 @@ class ExportConfig:
     x265_params: str = "frame-threads=1:rc-lookahead=10"
     audio: str = "copy"                     # copy | aac | none
     container: str = "mp4"
+    x265_asm: str = "auto"                  # auto | default | none (see x265_asm())
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "ExportConfig":
@@ -86,6 +88,8 @@ class ExportConfig:
             raise ValueError(f"Audio desconocido: {self.audio} (copy, aac o none)")
         if self.container not in ("mp4", "mov"):
             raise ValueError(f"Contenedor no soportado: {self.container} (mp4 o mov)")
+        if self.x265_asm not in ("auto", "default", "none"):
+            raise ValueError(f"x265_asm desconocido: {self.x265_asm} (auto, default o none)")
 
 
 @dataclass
@@ -208,6 +212,25 @@ def _color_args(media: MediaInfo, tags: Optional[dict] = None) -> list:
     return args
 
 
+# x265 4.1 (Debian's libx265-215) on the Pi 5: with its NEON code at 10 bits
+# it wrote a valid stream whose pictures were wrong — a full-contrast stripe
+# 22 px tall vanished from 30 consecutive frames at crf 18, in any decoder.
+# NEON alone already failed; asm=none and 8 bits were correct. It depends on
+# size and content (640x352 failed, 640x360 passed), so it is not a rare
+# corner to wait out. ``auto`` therefore turns x265's asm off at 10 bits on
+# ARM64 (Pi and Apple silicon alike); see tests/test_export.py.
+
+
+def x265_asm(cfg: ExportConfig) -> Optional[str]:
+    """The ``asm=`` value for x265, or None to leave x265's own choice."""
+    if cfg.x265_asm == "none":
+        return "none"
+    if cfg.x265_asm == "auto" and int(cfg.bit_depth) == 10 and \
+            platform.machine().lower() in ("aarch64", "arm64"):
+        return "none"
+    return None
+
+
 def _encoder_args(media: MediaInfo, cfg: ExportConfig, tags: Optional[dict] = None) -> list:
     enc = ENCODERS[cfg.codec]
     args = ["-c:v", enc, "-pix_fmt", PIX_FMT[int(cfg.bit_depth)],
@@ -216,6 +239,9 @@ def _encoder_args(media: MediaInfo, cfg: ExportConfig, tags: Optional[dict] = No
         params = "log-level=error"
         if cfg.x265_params:
             params += ":" + cfg.x265_params
+        asm = x265_asm(cfg)
+        if asm and "asm=" not in params:
+            params += f":asm={asm}"
         args += ["-x265-params", params, "-tag:v", "hvc1"]
     return args + _color_args(media, tags)
 
@@ -256,11 +282,12 @@ def export_segment(media: MediaInfo, start: float, end: float, output_dir: str,
                    cfg: Optional[ExportConfig] = None, needs_reencode: bool = False,
                    name: Optional[str] = None, progress=None,
                    video_filter: Optional[str] = None,
-                   color_tags: Optional[dict] = None) -> ExportResult:
+                   color_tags: Optional[dict] = None, suffix: str = "") -> ExportResult:
     """Write ``[start, end)`` of ``media`` (seconds) as one file in
     ``output_dir``. ``needs_reencode`` says the picture will change (colour,
     reframing), which rules out ``copy``; a ``video_filter`` implies it.
-    ``color_tags`` replace the source's tags when the filter converts colour."""
+    ``color_tags`` replace the source's tags when the filter converts colour.
+    ``suffix`` goes before the extension of the default name (``_vertical``)."""
     cfg = cfg or ExportConfig()
     cfg.validate()
     needs_reencode = needs_reencode or bool(video_filter)
@@ -295,7 +322,7 @@ def export_segment(media: MediaInfo, start: float, end: float, output_dir: str,
         last = max(first + 1, int(round(end * fps)))
         a, b = first / fps, last / fps
 
-    filename = name or f"{stem}_{a:07.2f}-{b:07.2f}.{cfg.container}"
+    filename = name or f"{stem}_{a:07.2f}-{b:07.2f}{suffix}.{cfg.container}"
     final = output_path(output_dir, filename, [media.path])
     work = tempfile.mkdtemp(prefix=".dronereel-", dir=os.path.dirname(final))
     t0 = time.time()
@@ -364,6 +391,8 @@ def write_record(result: ExportResult, media: MediaInfo, extra: dict) -> str:
 # Measured on the Pi 5 (8 GB): x265 10-bit, preset medium, the YAML's
 # x265_params, 4K60 source -> 0.92 frames/s, peak 2.5 GB.
 MEASURED_4K_FPS = 0.92
+# Same clip and settings with asm=none, relative to NEON: 0.80 / 1.66 fps.
+NO_ASM_FACTOR = 0.48
 MEASURED_4K_PEAK_MB = 2500
 
 
@@ -378,15 +407,21 @@ def _mem_available_mb() -> Optional[int]:
     return None
 
 
-def reencode_notes(media: MediaInfo, start: float, end: float) -> list:
+def reencode_notes(media: MediaInfo, start: float, end: float,
+                   pixels: Optional[int] = None, cfg: Optional[ExportConfig] = None) -> list:
     """Time estimate and memory warning before a re-encode, from the Pi
-    measurement scaled by pixel count (a rough guide, not a promise)."""
-    pixels = max(1, media.width * media.height)
+    measurement scaled by the encoded pixel count (``pixels``: the output's,
+    when it is cropped; a rough guide, not a promise)."""
+    pixels = max(1, pixels or media.width * media.height)
     scale = pixels / (3840 * 2160)
     frames = max(1, int(round((end - start) * media.fps)))
-    minutes = frames / (MEASURED_4K_FPS / max(scale, 0.05)) / 60
-    notes = [f"Recodificar {frames} fotogramas: unos {minutes:.0f} min estimados "
-             f"(medido en la Pi 5: {MEASURED_4K_FPS} fps en 4K)."]
+    fps = MEASURED_4K_FPS
+    if cfg is not None and cfg.codec == "hevc" and x265_asm(cfg) == "none":
+        fps *= NO_ASM_FACTOR
+    minutes = frames / (fps / max(scale, 0.05)) / 60
+    notes = [f"Recodificar {frames} fotogramas: unos {max(minutes, 1):.0f} min estimados "
+             f"(medido en la Pi 5: {fps:.2f} fps en 4K"
+             + (", x265 sin NEON a 10 bits" if fps != MEASURED_4K_FPS else "") + ")."]
     need = int(MEASURED_4K_PEAK_MB * max(scale, 0.25))
     avail = _mem_available_mb()
     if avail is not None and avail < need + 300:

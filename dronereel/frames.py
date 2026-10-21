@@ -42,6 +42,8 @@ class FrameSource:
     width: int
     height: int
     decoder: Optional[str] = None       # "hardware" | "software", once running
+    start: float = 0.0                  # seconds of the source
+    duration: Optional[float] = None    # None = to the end
 
     @property
     def frame_bytes(self) -> int:
@@ -66,7 +68,12 @@ def _command(src: FrameSource, hardware: bool) -> list:
     else:
         vf = f"fps={src.fps},{scale}"
         pre = []
-    return ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error", *pre,
+    span = []
+    if src.start > 0:
+        span += ["-ss", f"{src.start:.6f}"]
+    if src.duration is not None:
+        span += ["-t", f"{src.duration:.6f}"]
+    return ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error", *pre, *span,
             "-i", src.media.path, "-map", "0:v:0", "-vf", vf,
             "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
 
@@ -93,10 +100,13 @@ def _run(src: FrameSource, hardware: bool) -> Iterator[np.ndarray]:
 
 
 def iter_frames(media: MediaInfo, fps: float, width: int,
-                prefer_hardware: bool = True) -> tuple:
-    """``(source, frames)``: frame ``k`` of ``frames`` is at ``k / fps`` s."""
+                prefer_hardware: bool = True, start: float = 0.0,
+                duration: Optional[float] = None) -> tuple:
+    """``(source, frames)``: frame ``k`` of ``frames`` is at ``start + k / fps``
+    s; ``duration`` limits the stretch read (None = to the end)."""
     w, h = work_size(media, width)
-    src = FrameSource(media, float(fps), w, h)
+    src = FrameSource(media, float(fps), w, h, start=max(0.0, float(start)),
+                      duration=duration)
 
     def frames() -> Iterator[np.ndarray]:
         if prefer_hardware and media.video_codec == "hevc" and media.rotation == 0:
