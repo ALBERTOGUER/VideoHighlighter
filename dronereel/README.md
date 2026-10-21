@@ -232,6 +232,32 @@ recodificación es mucho más rápida, así que conviene quitar el límite de
 memoria de x265: copia el YAML de la cámara a `~/.config/dronereel/profiles/`
 y pon `x265_params: ""` en `export:`. Probado solo en la Pi.
 
+## Continuar en otra computadora
+
+El código está en GitHub (rama `dronereel`): instálalo como arriba. Para
+llevar también tus datos (solo números, nunca vídeos):
+
+```bash
+scp USUARIO@IP-DE-LA-PI:~/.local/share/dronereel/ratings.jsonl ~/ratings-pi.jsonl
+.venv/bin/python -m dronereel dataset --merge ~/ratings-pi.jsonl   # sin duplicados
+.venv/bin/python -m dronereel train                                # el modelo se recalcula
+```
+
+La caché de análisis no hace falta: se regenera sola.
+
+**Seguir con Claude Code.** Lo más sencillo es abrir `claude` en la carpeta
+del repositorio y pedirle que lea este README y los commits de la rama
+`dronereel`, donde están las fases, las decisiones y las limitaciones.
+
+Para retomar exactamente la misma conversación, copia su archivo `.jsonl`
+desde `~/.claude/projects/<carpeta>/` del equipo original a
+`~/.claude/projects/<carpeta-nueva>/` del nuevo, donde `<carpeta-nueva>` es
+la ruta del repositorio con cada `/` cambiada por `-` (p. ej.
+`/Users/alberto/VideoHighlighter` → `-Users-alberto-VideoHighlighter`), y
+abre `claude --resume` dentro del repositorio. Las rutas de la conversación
+serán las del equipo original; las notas persistentes de Claude no viajan
+con ella.
+
 `probe` solo lee el archivo. El color se transforma **únicamente** con un
 perfil confirmado: por ti (`--camera` + `--profile`) o por una regla marcada
 `verified: true` en el YAML de la cámara. Si no, se conserva el color original.
