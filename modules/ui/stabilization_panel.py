@@ -1,15 +1,12 @@
-"""Gyroflow stabilization settings: the panel in Video Output, and the dialog
-that asks for them before a run.
-
-Both are the same ``StabilizationPanel``, so a value means the same thing in
-either place; the dialog writes what it was accepted with back to the panel.
-"""
+"""Gyroflow stabilization settings: the panel in Video Output, also shown as a
+section of the before-run dialog (``modules.ui.before_run_dialog``), so a
+value means the same thing in either place."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
     QHBoxLayout, QLabel, QRadioButton, QButtonGroup, QSlider, QSpinBox,
     QVBoxLayout, QWidget,
 )
@@ -223,25 +220,3 @@ class StabilizationPanel(QWidget):
         self.step_spin.setValue(s["keyframe_step"])
         self._sync()
 
-
-class StabilizationDialog(QDialog):
-    """Asked on Analyze when the panel's "Ask before each run" is on."""
-
-    def __init__(self, settings, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Stabilization (Gyroflow)")
-        layout = QVBoxLayout(self)
-        self.panel = StabilizationPanel(settings, in_dialog=True)
-        layout.addWidget(self.panel)
-        self.dont_ask = QCheckBox("Don't ask again (change it in Detailed settings → Video Output)")
-        layout.addWidget(self.dont_ask)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Analyze with these settings")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def settings(self) -> dict:
-        s = self.panel.settings()
-        s["ask"] = not self.dont_ask.isChecked()
-        return s

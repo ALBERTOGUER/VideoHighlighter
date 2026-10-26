@@ -473,6 +473,13 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
         from modules.media.stabilize import resolve_settings as _resolve_stab
         STABILIZATION = _resolve_stab(
             gui_config.get("stabilization", config.get("highlights", {}).get("stabilization")))
+        # What the run delivers: the reel, DroneReel's best segment, or both.
+        from modules.media.delivery import (
+            best_segment, resolve_settings as _resolve_delivery, segment_path,
+            wants_reel, wants_segment,
+        )
+        DELIVERY = _resolve_delivery(
+            gui_config.get("delivery", config.get("highlights", {}).get("delivery")))
 
         # Transcript settings
         USE_TRANSCRIPT = gui_config.get("use_transcript", False) and TRANSCRIPT_AVAILABLE
@@ -2582,7 +2589,7 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
             log(f"🎨 Color LUT: {os.path.basename(LUT_PATH)}")
 
         stabilizer = None
-        if STABILIZATION["enabled"] and segments:
+        if STABILIZATION["enabled"] and (segments or wants_segment(DELIVERY)):
             from modules.media.stabilize import ClipStabilizer, StabilizeError
             # Gyroflow needs the gyro track, which a time-range trim (an ffmpeg
             # stream copy) drops — so it always reads the original, offset.
@@ -2624,113 +2631,129 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
             import re
             import shutil
 
-            if len(segments) == 0:
-                log("⚠️ No segments selected — nothing to cut.")
-            elif len(segments) == 1 and not EXPORT_CLIPS:
-                check_cancellation(cancel_flag, log, "video cutting")
-                _cut_segment(1, segments[0][0], segments[0][1], OUTPUT_FILE)
-            else:
-                output_dir = os.path.dirname(OUTPUT_FILE) or "."
-                video_base_name = sanitize_base_name(
-                    os.path.splitext(os.path.basename(processed_video_path))[0])
-                clip_paths = []
-                clips_dir = None
-                if EXPORT_CLIPS:
-                    clips_dir = clips_directory(OUTPUT_FILE, video_base_name)
-                    os.makedirs(clips_dir, exist_ok=True)
-                    log(f"📁 Separate clips → {clips_dir}")
-
-                for i, (s, e) in enumerate(segments):
-                    check_cancellation(cancel_flag, log, f"video cutting clip {i+1}")
-                    if EXPORT_CLIPS:
-                        clip_path = segment_clip_path(
-                            OUTPUT_FILE, video_base_name, i + 1, s, e)
-                    else:
-                        clip_path = os.path.join(
-                            output_dir, f"{video_base_name}_temp_clip_{i}.mp4")
-                    log(f"  Creating clip: {clip_path}")
-                    _cut_segment(i + 1, s, e, clip_path)
-                    if not os.path.exists(clip_path):
-                        raise Exception(f"Failed to create clip: {clip_path}")
-                    clip_paths.append(clip_path)
-                    progress.update_progress(
-                        90 + (i + 1) * 5 // len(segments), 100,
-                        "Pipeline", f"Cut clip {i+1}/{len(segments)}")
-
-                if len(segments) == 1:
-                    os.makedirs(output_dir, exist_ok=True)
-                    shutil.copy2(clip_paths[0], OUTPUT_FILE)
+            if wants_segment(DELIVERY):
+                # DroneReel's one continuous segment, through the same cut
+                # (stabilization, LUT) as a reel clip.
+                check_cancellation(cancel_flag, log, "best segment")
+                log("🎬 Best continuous segment (DroneReel)...")
+                try:
+                    best_s, best_e, why = best_segment(processed_video_path, DELIVERY, log)
+                except Exception as err:
+                    log(f"⚠️ No best segment — {err}")
                 else:
-                    check_cancellation(cancel_flag, log, "video concatenation")
-                    concat_file = os.path.join(output_dir, "concat_list.txt")
-                    log(f"📝 Writing concat file: {concat_file}")
-                    with open(concat_file, "w", encoding="utf-8") as f:
+                    best_path = segment_path(OUTPUT_FILE, best_s, best_e)
+                    log(f"   {best_s:.1f}–{best_e:.1f}s ({best_e - best_s:.1f}s, {why})")
+                    _cut_segment(0, best_s, best_e, best_path)
+                    log(f"✅ Best segment saved: {best_path}")
+
+            if wants_reel(DELIVERY):
+                if len(segments) == 0:
+                    log("⚠️ No segments selected — nothing to cut.")
+                elif len(segments) == 1 and not EXPORT_CLIPS:
+                    check_cancellation(cancel_flag, log, "video cutting")
+                    _cut_segment(1, segments[0][0], segments[0][1], OUTPUT_FILE)
+                else:
+                    output_dir = os.path.dirname(OUTPUT_FILE) or "."
+                    video_base_name = sanitize_base_name(
+                        os.path.splitext(os.path.basename(processed_video_path))[0])
+                    clip_paths = []
+                    clips_dir = None
+                    if EXPORT_CLIPS:
+                        clips_dir = clips_directory(OUTPUT_FILE, video_base_name)
+                        os.makedirs(clips_dir, exist_ok=True)
+                        log(f"📁 Separate clips → {clips_dir}")
+
+                    for i, (s, e) in enumerate(segments):
+                        check_cancellation(cancel_flag, log, f"video cutting clip {i+1}")
+                        if EXPORT_CLIPS:
+                            clip_path = segment_clip_path(
+                                OUTPUT_FILE, video_base_name, i + 1, s, e)
+                        else:
+                            clip_path = os.path.join(
+                                output_dir, f"{video_base_name}_temp_clip_{i}.mp4")
+                        log(f"  Creating clip: {clip_path}")
+                        _cut_segment(i + 1, s, e, clip_path)
+                        if not os.path.exists(clip_path):
+                            raise Exception(f"Failed to create clip: {clip_path}")
+                        clip_paths.append(clip_path)
+                        progress.update_progress(
+                            90 + (i + 1) * 5 // len(segments), 100,
+                            "Pipeline", f"Cut clip {i+1}/{len(segments)}")
+
+                    if len(segments) == 1:
+                        os.makedirs(output_dir, exist_ok=True)
+                        shutil.copy2(clip_paths[0], OUTPUT_FILE)
+                    else:
+                        check_cancellation(cancel_flag, log, "video concatenation")
+                        concat_file = os.path.join(output_dir, "concat_list.txt")
+                        log(f"📝 Writing concat file: {concat_file}")
+                        with open(concat_file, "w", encoding="utf-8") as f:
+                            for t in clip_paths:
+                                abs_path = os.path.abspath(t).replace("\\", "/")
+                                f.write(f"file '{abs_path}'\n")
+
+                        concat_file_normalized = concat_file.replace("\\", "/")
+                        output_filename = os.path.basename(OUTPUT_FILE)
+                        output_filename_clean = re.sub(r"['\"]", "", output_filename)
+                        output_filename_clean = re.sub(
+                            r"[@#$%^&*()]", "_", output_filename_clean)
+                        OUTPUT_FILE_CLEAN = os.path.join(output_dir, output_filename_clean)
+
+                        log(f"🎬 Running FFmpeg concatenation to: {OUTPUT_FILE_CLEAN}")
+                        subprocess.run([
+                            ffmpeg_exe(), "-y", "-v", "error", "-f", "concat",
+                            "-safe", "0", "-i", concat_file_normalized,
+                            "-c", "copy", OUTPUT_FILE_CLEAN,
+                        ], check=True)
+                        OUTPUT_FILE = OUTPUT_FILE_CLEAN
+
+                        if not KEEP_TEMP:
+                            try:
+                                os.remove(concat_file)
+                            except Exception:
+                                pass
+
+                    if not EXPORT_CLIPS and not KEEP_TEMP:
                         for t in clip_paths:
-                            abs_path = os.path.abspath(t).replace("\\", "/")
-                            f.write(f"file '{abs_path}'\n")
+                            try:
+                                os.remove(t)
+                            except Exception:
+                                pass
 
-                    concat_file_normalized = concat_file.replace("\\", "/")
-                    output_filename = os.path.basename(OUTPUT_FILE)
-                    output_filename_clean = re.sub(r"['\"]", "", output_filename)
-                    output_filename_clean = re.sub(
-                        r"[@#$%^&*()]", "_", output_filename_clean)
-                    OUTPUT_FILE_CLEAN = os.path.join(output_dir, output_filename_clean)
+                    if EXPORT_CLIPS and clips_dir:
+                        log(f"✅ {len(clip_paths)} separate clip(s) in {clips_dir}")
+                # Nothing was cut when no segment survived selection: neither the
+                # success line nor the music bed may fire, or a run that produced
+                # no file still reports one (and would mux music onto a stale
+                # highlight left over from an earlier run).
+                if segments:
+                    log(f"✅ Highlight saved: {OUTPUT_FILE}, duration {total_duration:.1f}s")
 
-                    log(f"🎬 Running FFmpeg concatenation to: {OUTPUT_FILE_CLEAN}")
-                    subprocess.run([
-                        ffmpeg_exe(), "-y", "-v", "error", "-f", "concat",
-                        "-safe", "0", "-i", concat_file_normalized,
-                        "-c", "copy", OUTPUT_FILE_CLEAN,
-                    ], check=True)
-                    OUTPUT_FILE = OUTPUT_FILE_CLEAN
-
-                    if not KEEP_TEMP:
+                    # ── Music bed ────────────────────────────────────────────────────
+                    # Mux the chosen track onto the finished highlight. Applied to a
+                    # temp file next to the output then os.replace'd on: a bad music
+                    # file logs a warning and leaves the original highlight untouched,
+                    # never killing a run that already produced a video.
+                    if MUSIC_PATH and OUTPUT_FILE and os.path.exists(OUTPUT_FILE):
                         try:
-                            os.remove(concat_file)
-                        except Exception:
-                            pass
+                            from modules.media.music_track import apply_music
 
-                if not EXPORT_CLIPS and not KEEP_TEMP:
-                    for t in clip_paths:
-                        try:
-                            os.remove(t)
-                        except Exception:
-                            pass
-
-                if EXPORT_CLIPS and clips_dir:
-                    log(f"✅ {len(clip_paths)} separate clip(s) in {clips_dir}")
-            # Nothing was cut when no segment survived selection: neither the
-            # success line nor the music bed may fire, or a run that produced
-            # no file still reports one (and would mux music onto a stale
-            # highlight left over from an earlier run).
-            if segments:
-                log(f"✅ Highlight saved: {OUTPUT_FILE}, duration {total_duration:.1f}s")
-
-                # ── Music bed ────────────────────────────────────────────────────
-                # Mux the chosen track onto the finished highlight. Applied to a
-                # temp file next to the output then os.replace'd on: a bad music
-                # file logs a warning and leaves the original highlight untouched,
-                # never killing a run that already produced a video.
-                if MUSIC_PATH and OUTPUT_FILE and os.path.exists(OUTPUT_FILE):
-                    try:
-                        from modules.media.music_track import apply_music
-
-                        music_root, music_ext = os.path.splitext(OUTPUT_FILE)
-                        music_tmp = f"{music_root}_music{music_ext or '.mp4'}"
-                        log(f"🎵 Applying music: {os.path.basename(MUSIC_PATH)}")
-                        apply_music(
-                            OUTPUT_FILE, MUSIC_PATH, music_tmp,
-                            mode=MUSIC_MODE, music_volume=MUSIC_VOLUME, log_fn=log,
-                        )
-                        os.replace(music_tmp, OUTPUT_FILE)
-                        log("🎵 Music applied to highlight")
-                    except Exception as e:
-                        log(f"⚠️ Could not apply music (left highlight as-is): {e}")
-                        try:
-                            if os.path.exists(music_tmp):
-                                os.remove(music_tmp)
-                        except Exception:
-                            pass
+                            music_root, music_ext = os.path.splitext(OUTPUT_FILE)
+                            music_tmp = f"{music_root}_music{music_ext or '.mp4'}"
+                            log(f"🎵 Applying music: {os.path.basename(MUSIC_PATH)}")
+                            apply_music(
+                                OUTPUT_FILE, MUSIC_PATH, music_tmp,
+                                mode=MUSIC_MODE, music_volume=MUSIC_VOLUME, log_fn=log,
+                            )
+                            os.replace(music_tmp, OUTPUT_FILE)
+                            log("🎵 Music applied to highlight")
+                        except Exception as e:
+                            log(f"⚠️ Could not apply music (left highlight as-is): {e}")
+                            try:
+                                if os.path.exists(music_tmp):
+                                    os.remove(music_tmp)
+                            except Exception:
+                                pass
         except RuntimeError:
             return None
         except Exception as e:

@@ -313,7 +313,7 @@ def qapp():
 
 
 def test_panel_round_trips_every_setting(qapp):
-    from modules.ui.stabilization_panel import StabilizationDialog, StabilizationPanel
+    from modules.ui.stabilization_panel import StabilizationPanel
     wanted = st.resolve_settings({
         "enabled": True, "ask": True, "mode": "auto_frame", "output_size": "1080x1920",
         "codec": "ProRes", "bitrate": 220, "smoothness": 0.42, "lpf_enabled": True,
@@ -321,9 +321,6 @@ def test_panel_round_trips_every_setting(qapp):
         "pan_response": 0.7, "keyframe_step": 0.8})
     panel = StabilizationPanel(wanted)
     assert panel.settings() == wanted
-    dialog = StabilizationDialog(wanted)
-    dialog.dont_ask.setChecked(True)
-    assert dialog.settings() == {**wanted, "ask": False}
 
 
 def test_panel_shows_the_controls_of_the_chosen_mode(qapp):

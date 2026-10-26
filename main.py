@@ -2905,6 +2905,14 @@ class VideoHighlighterGUI(QWidget):
         lut_row.addWidget(lut_clear_btn)
         output_layout.addRow("Color LUT:", lut_row)
 
+        # What a run delivers: the reel, DroneReel's best segment, or both.
+        from modules.ui.delivery_panel import DeliveryPanel
+        delivery_box = QGroupBox("Delivery")
+        delivery_layout = QVBoxLayout(delivery_box)
+        self.delivery_panel = DeliveryPanel(highlights_cfg.get("delivery"))
+        delivery_layout.addWidget(self.delivery_panel)
+        output_layout.addRow(delivery_box)
+
         # Gyroflow stabilization of the kept clips, before the LUT.
         from modules.ui.stabilization_panel import StabilizationPanel
         stab_box = QGroupBox("Stabilization (Gyroflow)")
@@ -4232,6 +4240,7 @@ class VideoHighlighterGUI(QWidget):
             "render_mode": self.render_mode_combo.currentData(),
             "lut_path": self.lut_path_input.text().strip(),
             "stabilization": self.stab_panel.settings(),
+            "delivery": self.delivery_panel.settings(),
             "highlight_objects": highlight_objects,
             "interesting_actions": interesting_actions,
             "actions_require_objects": self.actions_require_objects_chk.isChecked(),
@@ -4615,6 +4624,8 @@ class VideoHighlighterGUI(QWidget):
             self.lut_path_input.setText(str(get("highlights", "lut_path") or ""))
         if has("highlights", "stabilization"):
             self.stab_panel.set_settings(get("highlights", "stabilization"))
+        if has("highlights", "delivery"):
+            self.delivery_panel.set_settings(get("highlights", "delivery"))
         if has("highlights", "use_time_range"):
             self.use_time_range_chk.setChecked(bool(get("highlights", "use_time_range")))
         if has("highlights", "range_start_pct"):
@@ -4805,6 +4816,7 @@ class VideoHighlighterGUI(QWidget):
                 "render_mode": self.render_mode_combo.currentData(),
                 "lut_path": self.lut_path_input.text().strip(),
                 "stabilization": self.stab_panel.settings(),
+                "delivery": self.delivery_panel.settings(),
                 "auto_min_clip": int(self.spin_auto_min_clip.value()),
                 "auto_max_clip": int(self.spin_auto_max_clip.value()),
                 "auto_merge_gap": int(self.spin_auto_merge_gap.value()),
@@ -5569,16 +5581,11 @@ class VideoHighlighterGUI(QWidget):
             self.append_log("⚠️ Pipeline already running!")
             return
 
-        # Stabilization settings asked per run, when the user wants that. A
-        # report-only pass renders nothing, so there is nothing to ask.
-        if not report_only and self.stab_panel.settings()["ask"]:
-            from modules.ui.stabilization_panel import StabilizationDialog
-            dialog = StabilizationDialog(self.stab_panel.settings(), self)
-            if dialog.exec() != QDialog.Accepted:
-                self.append_log("Run cancelled.")
-                return
-            self.stab_panel.set_settings(dialog.settings())
-            self.save_config()
+        # Settings asked per run — one dialog, a section per panel set to
+        # "Ask before each run". A report-only pass renders nothing to ask about.
+        if not report_only and not self._ask_before_run():
+            self.append_log("Run cancelled.")
+            return
 
         # --- Validate scoring points ---
         scene_points = int(self.spin_scene_points.value())
@@ -5693,6 +5700,7 @@ class VideoHighlighterGUI(QWidget):
             "render_mode": self.render_mode_combo.currentData(),
             "lut_path": self.lut_path_input.text().strip(),
             "stabilization": self.stab_panel.settings(),
+            "delivery": self.delivery_panel.settings(),
             "output_file": output_file,
             "output_base": output_base,
             "output_multiple": output_multiple,
@@ -6502,6 +6510,32 @@ class VideoHighlighterGUI(QWidget):
         if not entry:
             return ("ollama", "llama3")
         return (entry["backend"], entry["model"])
+
+    def _before_run_sections(self):
+        """``(key, title, panel)`` of the panels that may be asked before a run."""
+        return (
+            ("delivery", "Delivery", self.delivery_panel),
+            ("stabilization", "Stabilization (Gyroflow)", self.stab_panel),
+        )
+
+    def _ask_before_run(self) -> bool:
+        """Show the before-run dialog for every panel set to ask; False when
+        the user cancelled. Accepted values go back to the panels."""
+        asked = [(key, title, type(panel), panel.settings())
+                 for key, title, panel in self._before_run_sections()
+                 if panel.settings()["ask"]]
+        if not asked:
+            return True
+        from modules.ui.before_run_dialog import BeforeRunDialog
+        dialog = BeforeRunDialog(asked, self)
+        if dialog.exec() != QDialog.Accepted:
+            return False
+        results = dialog.results()
+        for key, _title, panel in self._before_run_sections():
+            if key in results:
+                panel.set_settings(results[key])
+        self.save_config()
+        return True
 
     def _browse_lut(self):
         from modules.media.lut import LUT_SUFFIXES
