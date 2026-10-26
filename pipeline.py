@@ -463,12 +463,23 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
         RENDER_MODE = gui_config.get("render_mode", config.get("highlights", {}).get("render_mode", "cpu"))
         if RENDER_MODE not in ("cpu", "gpu"):
             RENDER_MODE = "cpu"
-        # Optional 3D LUT (e.g. the camera maker's log-to-Rec.709 one), applied
-        # while the clips are cut. A bad path logs and is skipped, never fatal.
-        from modules.media.lut import resolve_lut
-        LUT_PATH = resolve_lut(
-            gui_config.get("lut_path", config.get("highlights", {}).get("lut_path")),
-            log=log)
+        # Colour, applied while the clips are cut: the camera's LUT (e.g. log to
+        # Rec.709) plus an optional grade, composed into one LUT. A bad LUT path
+        # logs and is skipped, never fatal. ``lut_path`` alone is the older form.
+        from modules.media.color_grade import effective_lut, is_neutral
+        from modules.media.color_grade import resolve_settings as _resolve_color
+        COLOR = _resolve_color({
+            "lut_path": gui_config.get("lut_path", config.get("highlights", {}).get("lut_path")),
+            **(gui_config.get("color") or config.get("highlights", {}).get("color") or {})})
+        try:
+            LUT_PATH = effective_lut(COLOR, log=log)
+        except Exception as e:
+            log(f"⚠️ Colour grade skipped — {e}")
+            LUT_PATH = effective_lut(_resolve_color({"lut_path": COLOR["lut_path"]}), log=log)
+        if LUT_PATH and not is_neutral(COLOR):
+            log("🎨 Colour grade: " + ", ".join(
+                f"{k} {COLOR[k]:g}" for k in ("exposure", "contrast", "saturation",
+                                               "temperature", "tint", "highlights")))
         # Optional Gyroflow stabilization of the kept segments, before the LUT.
         from modules.media.stabilize import resolve_settings as _resolve_stab
         STABILIZATION = _resolve_stab(

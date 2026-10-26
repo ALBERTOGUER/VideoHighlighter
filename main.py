@@ -2887,23 +2887,16 @@ class VideoHighlighterGUI(QWidget):
             self.render_mode_combo.setCurrentIndex(_rm_idx)
         output_layout.addRow("Cut / encode:", self.render_mode_combo)
 
-        # Optional 3D LUT applied as the clips are cut — log footage (D-Log,
-        # S-Log, V-Log…) comes out flat until the maker's LUT maps it to Rec.709.
-        lut_row = QHBoxLayout()
-        self.lut_path_input = QLineEdit(str(highlights_cfg.get("lut_path", "") or ""))
-        self.lut_path_input.setPlaceholderText("None — clips keep the source colors")
-        self.lut_path_input.setToolTip(
-            "Optional 3D LUT (.cube) applied to the highlight and every clip.\n"
-            "Use your camera's log-to-Rec.709 LUT to turn flat log footage\n"
-            "(D-Log, S-Log, V-Log…) into normal color. The source is never changed.")
-        lut_browse_btn = QPushButton("Browse…")
-        lut_browse_btn.clicked.connect(self._browse_lut)
-        lut_clear_btn = QPushButton("Clear")
-        lut_clear_btn.clicked.connect(self.lut_path_input.clear)
-        lut_row.addWidget(self.lut_path_input, 1)
-        lut_row.addWidget(lut_browse_btn)
-        lut_row.addWidget(lut_clear_btn)
-        output_layout.addRow("Color LUT:", lut_row)
+        # Colour: the camera LUT plus an optional grade (white balance,
+        # exposure, saturation…), with a recommendation and a preview.
+        from modules.ui.color_panel import ColorPanel
+        color_box = QGroupBox("Color")
+        color_layout = QVBoxLayout(color_box)
+        self.color_panel = ColorPanel(
+            {"lut_path": highlights_cfg.get("lut_path", ""), **(highlights_cfg.get("color") or {})},
+            video_provider=self._first_video)
+        color_layout.addWidget(self.color_panel)
+        output_layout.addRow(color_box)
 
         # What a run delivers: the reel, DroneReel's best segment, or both.
         from modules.ui.delivery_panel import DeliveryPanel
@@ -4238,7 +4231,8 @@ class VideoHighlighterGUI(QWidget):
             "keep_temp": self.keep_temp_chk.isChecked(),
             "export_separate_clips": self.export_clips_chk.isChecked(),
             "render_mode": self.render_mode_combo.currentData(),
-            "lut_path": self.lut_path_input.text().strip(),
+            "lut_path": self.color_panel.settings()["lut_path"],
+            "color": self.color_panel.settings(),
             "stabilization": self.stab_panel.settings(),
             "delivery": self.delivery_panel.settings(),
             "highlight_objects": highlight_objects,
@@ -4621,7 +4615,10 @@ class VideoHighlighterGUI(QWidget):
                 "Export clips: ON" if self.export_clips_chk.isChecked() else "Export clips: OFF")
         self._set_combo_data(self.render_mode_combo, get("highlights", "render_mode") if has("highlights", "render_mode") else None)
         if has("highlights", "lut_path"):
-            self.lut_path_input.setText(str(get("highlights", "lut_path") or ""))
+            self.color_panel.set_settings({**self.color_panel.settings(),
+                                           "lut_path": get("highlights", "lut_path") or ""})
+        if has("highlights", "color"):
+            self.color_panel.set_settings(get("highlights", "color"))
         if has("highlights", "stabilization"):
             self.stab_panel.set_settings(get("highlights", "stabilization"))
         if has("highlights", "delivery"):
@@ -4814,7 +4811,8 @@ class VideoHighlighterGUI(QWidget):
                 "keep_temp": self.keep_temp_chk.isChecked(),
                 "export_separate_clips": self.export_clips_chk.isChecked(),
                 "render_mode": self.render_mode_combo.currentData(),
-                "lut_path": self.lut_path_input.text().strip(),
+                "lut_path": self.color_panel.settings()["lut_path"],
+                "color": self.color_panel.settings(),
                 "stabilization": self.stab_panel.settings(),
                 "delivery": self.delivery_panel.settings(),
                 "auto_min_clip": int(self.spin_auto_min_clip.value()),
@@ -5698,7 +5696,8 @@ class VideoHighlighterGUI(QWidget):
             "keep_temp": self.keep_temp_chk.isChecked(),
             "export_separate_clips": self.export_clips_chk.isChecked(),
             "render_mode": self.render_mode_combo.currentData(),
-            "lut_path": self.lut_path_input.text().strip(),
+            "lut_path": self.color_panel.settings()["lut_path"],
+            "color": self.color_panel.settings(),
             "stabilization": self.stab_panel.settings(),
             "delivery": self.delivery_panel.settings(),
             "output_file": output_file,
@@ -6515,13 +6514,17 @@ class VideoHighlighterGUI(QWidget):
         """``(key, title, panel)`` of the panels that may be asked before a run."""
         return (
             ("delivery", "Delivery", self.delivery_panel),
+            ("color", "Color", self.color_panel),
             ("stabilization", "Stabilization (Gyroflow)", self.stab_panel),
         )
 
     def _ask_before_run(self) -> bool:
         """Show the before-run dialog for every panel set to ask; False when
         the user cancelled. Accepted values go back to the panels."""
-        asked = [(key, title, type(panel), panel.settings())
+        import functools
+        asked = [(key, title,
+                  functools.partial(type(panel), **getattr(panel, "dialog_kwargs", {})),
+                  panel.settings())
                  for key, title, panel in self._before_run_sections()
                  if panel.settings()["ask"]]
         if not asked:
@@ -6537,14 +6540,10 @@ class VideoHighlighterGUI(QWidget):
         self.save_config()
         return True
 
-    def _browse_lut(self):
-        from modules.media.lut import LUT_SUFFIXES
-        start = os.path.dirname(self.lut_path_input.text().strip())
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Choose a color LUT", start,
-            f"3D LUTs ({' '.join('*' + s for s in LUT_SUFFIXES)});;All files (*)")
-        if path:
-            self.lut_path_input.setText(path)
+    def _first_video(self):
+        """The first video in the list, for the colour panel's Recommend/Preview."""
+        files = self.get_file_list()
+        return files[0] if files else None
 
     def _report_config(self):
         """What the run needs to write the report the way this window is set up.
