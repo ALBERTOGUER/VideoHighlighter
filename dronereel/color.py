@@ -51,6 +51,7 @@ from typing import Optional
 
 import numpy as np
 
+from dronereel import tools
 from dronereel.media import MediaInfo
 from dronereel.profiles import NO_TRANSFORM, Camera, ColorDecision
 
@@ -383,7 +384,7 @@ def compare_image(media: MediaInfo, cplan: ColorPlan, at: float, path: str,
              f"[c]{cplan.lut_filter()}[g];"
              f"[o]scale={half}:-2[o2];[g]scale={half}:-2[g2];"
              f"[o2][g2]hstack=inputs=2,format=rgb24[out]")
-    proc = subprocess.run(["ffmpeg", "-hide_banner", "-nostdin", "-v", "error",
+    proc = subprocess.run([tools.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error",
                            "-ss", f"{max(0.0, at):.3f}", "-i", media.path,
                            "-filter_complex", graph, "-map", "[out]", "-frames:v", "1",
                            "-f", "image2", "-c:v", "png", path],

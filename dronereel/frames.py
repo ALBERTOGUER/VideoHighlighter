@@ -24,6 +24,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Iterator, Optional
 
+from dronereel import tools
+
 import numpy as np
 
 from dronereel.media import MediaInfo
@@ -73,7 +75,7 @@ def _command(src: FrameSource, hardware: bool) -> list:
         span += ["-ss", f"{src.start:.6f}"]
     if src.duration is not None:
         span += ["-t", f"{src.duration:.6f}"]
-    return ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error", *pre, *span,
+    return [tools.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error", *pre, *span,
             "-i", src.media.path, "-map", "0:v:0", "-vf", vf,
             "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
 

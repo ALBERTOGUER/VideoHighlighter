@@ -180,6 +180,27 @@ def test_probe_without_ffprobe_reads_rotation(tmp_path, without_ffprobe):
     assert side[0]["rotation"] == 90
 
 
+def test_pyav_colour_enums_become_ffprobe_names():
+    # PyAV hands FFmpeg's colour enums back as ints; DJI log footage is
+    # tagged 1/1/1/tv, a 10-bit HDR clip 9/16/9/tv.
+    sdr = types.SimpleNamespace(color_primaries=1, color_trc=1, colorspace=1, color_range=1)
+    hdr = types.SimpleNamespace(color_primaries=9, color_trc=16, colorspace=9, color_range=2)
+
+    assert ffmpeg_tools._color_fields(sdr) == {
+        "color_primaries": "bt709", "color_transfer": "bt709",
+        "color_space": "bt709", "color_range": "tv"}
+    assert ffmpeg_tools._color_fields(hdr) == {
+        "color_primaries": "bt2020", "color_transfer": "smpte2084",
+        "color_space": "bt2020nc", "color_range": "pc"}
+
+
+def test_unspecified_colour_is_left_out_like_ffprobe_does():
+    unset = types.SimpleNamespace(color_primaries=2, color_trc=2, colorspace=2, color_range=0)
+
+    assert ffmpeg_tools._color_fields(unset) == {}
+    assert ffmpeg_tools._color_fields(object()) == {}
+
+
 @pytest.mark.parametrize("rotation", [0, 90])
 def test_pyav_answer_matches_ffprobe(tmp_path, monkeypatch, rotation):
     if not ffmpeg_tools.ffprobe_exe():

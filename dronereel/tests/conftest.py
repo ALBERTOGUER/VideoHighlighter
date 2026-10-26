@@ -17,9 +17,26 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
-needs_ffmpeg = pytest.mark.skipif(
-    not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
-    reason="ffmpeg/ffprobe not installed")
+def _expose_bundled_ffmpeg() -> bool:
+    """Tests call ``ffmpeg`` by name. Without one on PATH (a Mac with no
+    Homebrew), expose the app's bundled ffmpeg under that name. ffprobe is not
+    needed: DroneReel falls back to PyAV for what it asked ffprobe."""
+    if shutil.which("ffmpeg"):
+        return True
+    import tempfile
+    from dronereel import tools
+    exe = tools.ffmpeg()
+    if not os.path.isfile(exe):
+        return False
+    shim = tempfile.mkdtemp(prefix="dronereel-ffmpeg-")
+    os.symlink(exe, os.path.join(shim, "ffmpeg"))
+    os.environ["PATH"] = shim + os.pathsep + os.environ.get("PATH", "")
+    return True
+
+
+HAVE_FFMPEG = _expose_bundled_ffmpeg()
+
+needs_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg not installed")
 
 
 def _ffmpeg(*args: str) -> None:
@@ -30,8 +47,8 @@ def _ffmpeg(*args: str) -> None:
 def videos(tmp_path_factory):
     """``{"h264_audio": path, "hevc10": path}`` in a read-only-by-convention
     source folder, plus ``"dir"``."""
-    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
-        pytest.skip("ffmpeg/ffprobe not installed")
+    if not HAVE_FFMPEG:
+        pytest.skip("ffmpeg not installed")
     src = tmp_path_factory.mktemp("originals")
     h264 = str(src / "DJI_0001.MP4")
     _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25",
@@ -58,8 +75,8 @@ def motion_clips(tmp_path_factory):
     0.25 falling to ~0.19); blur, blown highlights, one hard cut at 2.0 s, and
     a featureless frame where movement cannot be measured.
     """
-    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
-        pytest.skip("ffmpeg/ffprobe not installed")
+    if not HAVE_FFMPEG:
+        pytest.skip("ffmpeg not installed")
     d = tmp_path_factory.mktemp("motion")
     tex = str(d / "tex.png")
     _ffmpeg("-f", "lavfi", "-i",
@@ -148,8 +165,8 @@ def numbered(tmp_path_factory):
     h264: 300 frames at 30000/1001 with B-frames, a keyframe every 30 frames,
     AAC audio, BT.709 tags. hevc: 125 frames at 25 fps, 10-bit, no audio.
     hevc_open: 400 frames at 60 fps, 10-bit, open GOP, keyframe every 60."""
-    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
-        pytest.skip("ffmpeg/ffprobe not installed")
+    if not HAVE_FFMPEG:
+        pytest.skip("ffmpeg not installed")
     src = tmp_path_factory.mktemp("numbered_originals")
     h264 = make_numbered(str(src / "DJI_0010.MP4"), 300, "30000/1001",
                          ["-c:v", "libx264", "-g", "30", "-bf", "2", "-crf", "16",

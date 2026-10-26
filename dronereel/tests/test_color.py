@@ -249,11 +249,10 @@ def test_cli_export_with_color(patches, tmp_path, monkeypatch):
     got = decode_patches(str(out / video))
     want = C.apply_lut(C.read_cube(lut_path), patches["colors"])
     assert np.abs(got - want).mean() < 0.01           # lossy x265 this time
-    tags = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v",
-                           "-show_entries", "stream=color_transfer,color_primaries,pix_fmt",
-                           "-of", "csv=p=0", str(out / video)],
-                          capture_output=True, text=True).stdout
-    assert "bt709" in tags and "yuv420p10le" in tags
+    from modules.media.ffmpeg_tools import probe   # ffprobe, or PyAV without it
+    v = next(s for s in probe(str(out / video))["streams"] if s["codec_type"] == "video")
+    assert v.get("color_transfer") == "bt709" and v.get("color_primaries") == "bt709"
+    assert v["pix_fmt"] == "yuv420p10le"
     assert_unchanged(fp)
     assert sorted(os.listdir(patches["dir"])) == listing
 
@@ -283,6 +282,5 @@ def test_cli_color_writes_comparisons_only(patches, tmp_path, monkeypatch):
                      "--output", str(out)]) == 0
     (png,) = os.listdir(out)
     assert png.endswith(".png")
-    w = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
-                        "-of", "csv=p=0", str(out / png)], capture_output=True, text=True).stdout
-    assert w.strip().startswith("1920,")
+    import cv2
+    assert cv2.imread(str(out / png)).shape[1] == 1920

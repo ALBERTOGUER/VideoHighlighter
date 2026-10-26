@@ -47,6 +47,7 @@ import cv2
 import numpy as np
 
 from dronereel.frames import iter_frames, work_size
+from dronereel import tools
 from dronereel.media import MediaInfo
 
 VERTICAL_VERSION = 1
@@ -314,7 +315,7 @@ def preview_image(media: MediaInfo, path: CropPath, start: float, end: float,
     for i in range(count):
         rel = (end - start) * (i + 0.5) / count
         proc = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-ss", f"{start + rel:.3f}",
+            [tools.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error", "-ss", f"{start + rel:.3f}",
              "-i", media.path, "-map", "0:v:0", "-frames:v", "1", "-vf", f"scale={w}:{h}",
              "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], capture_output=True)
         if proc.returncode != 0 or len(proc.stdout) < w * h * 3:

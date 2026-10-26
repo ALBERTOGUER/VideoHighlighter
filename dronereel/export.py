@@ -39,6 +39,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
+from dronereel import tools
 from dronereel.media import MediaInfo
 from dronereel.safety import assert_unchanged, fingerprint, output_path
 
@@ -131,12 +132,7 @@ def _fps_fraction(media: MediaInfo) -> tuple:
 
 
 def _format_start(path: str) -> float:
-    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=start_time",
-                          "-of", "csv=p=0", path], capture_output=True, text=True)
-    try:
-        return float(out.stdout.strip())
-    except ValueError:
-        return 0.0
+    return tools.format_start(path)
 
 
 def keyframes(path: str, around: Optional[tuple] = None) -> list:
@@ -151,20 +147,13 @@ def keyframes(path: str, around: Optional[tuple] = None) -> list:
     Reads packet headers only (no decoding); ``around=(a, b)`` limits the
     read to that stretch plus a margin, which matters for long 4K files on
     an SD card."""
-    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0",
-           "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0"]
-    if around:
-        a, b = around
-        cmd += ["-read_intervals", f"{max(0.0, a - 20):.3f}%{b + 20:.3f}"]
-    out = subprocess.run([*cmd, path], capture_output=True, text=True)
-    if out.returncode != 0:
-        raise ExportError(f"ffprobe no pudo leer los fotogramas clave: {out.stderr[-300:]}")
+    try:
+        raw = tools.video_packets(path, around)
+    except RuntimeError as e:
+        raise ExportError(f"ffprobe no pudo leer los fotogramas clave: {e}") from e
     t0 = _format_start(path)
-    packets = []                                        # decode order
-    for line in out.stdout.split():
-        parts = line.split(",")
-        if len(parts) >= 2 and parts[0] not in ("", "N/A"):
-            packets.append((float(parts[0]) - t0, "K" in parts[1]))
+    packets = [(pts - t0, "K" in flags)                 # decode order
+               for pts, flags in raw if pts is not None]
     found = {}
     for i, (t, key) in enumerate(packets):
         if key:
@@ -179,19 +168,14 @@ def count_frames(path: str) -> int:
     A stream copy of open-GOP HEVC (x265's default, likely DJI's too) keeps
     the leading pictures that reference the previous GOP; they are flagged
     ``D`` and dropped by decoders. Measured: 663 packets, 660 frames shown."""
-    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
-                          "-show_entries", "packet=flags", "-of", "csv=p=0", path],
-                         capture_output=True, text=True)
-    if out.returncode != 0:
+    try:
+        return sum(1 for _, flags in tools.video_packets(path) if "D" not in flags)
+    except (RuntimeError, OSError):
         return -1
-    return sum(1 for flags in out.stdout.split() if "D" not in flags)
 
 
 def _video_streams(path: str) -> int:
-    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v",
-                          "-show_entries", "stream=index", "-of", "csv=p=0", path],
-                         capture_output=True, text=True)
-    return len(out.stdout.split())
+    return tools.video_stream_count(path)
 
 
 def _audio_args(media: MediaInfo, cfg: ExportConfig) -> list:
@@ -332,7 +316,7 @@ def export_segment(media: MediaInfo, start: float, end: float, output_dir: str,
             # margin past it lets the muxer see that keyframe.
             pattern = os.path.join(work, f"part%03d.{cfg.container}")
             span = (cut if cut is not None else media.duration) - a
-            cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error",
+            cmd = [tools.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error",
                    "-ss", f"{a:.6f}", "-i", media.path, "-map", "0:v:0",
                    *_audio_args(media, cfg),
                    "-t", f"{span + 2.0:.6f}", "-c:v", "copy", "-map_metadata", "0",
@@ -344,7 +328,7 @@ def export_segment(media: MediaInfo, start: float, end: float, output_dir: str,
             produced = os.path.join(work, f"out.{cfg.container}")
             n = last - first
             seek = max(0.0, (first - 0.5) / fps)
-            cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error",
+            cmd = [tools.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error",
                    "-ss", f"{seek:.6f}", "-i", media.path, "-map", "0:v:0",
                    *_audio_args(media, cfg), "-frames:v", str(n),
                    "-t", f"{(n + 0.5) / fps:.6f}", "-fps_mode", "passthrough",

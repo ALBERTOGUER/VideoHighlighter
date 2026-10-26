@@ -21,10 +21,8 @@ NTSC = 30000 / 1001
 
 
 def streams(path):
-    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
-                          "stream=codec_type,codec_name,pix_fmt,r_frame_rate,color_primaries",
-                          "-of", "json", path], capture_output=True, text=True, check=True)
-    return json.loads(out.stdout)["streams"]
+    from modules.media.ffmpeg_tools import probe   # ffprobe, or PyAV without it
+    return probe(path)["streams"]
 
 
 def assert_consecutive(numbers, first, count):

@@ -160,6 +160,34 @@ def _rate(value) -> str:
     return f"{value.numerator}/{value.denominator}" if value else "0/0"
 
 
+# FFmpeg's colour enums (libavutil/pixfmt.h), which PyAV hands back as plain
+# ints, to the names ffprobe prints. Unspecified values are left out, as
+# ffprobe leaves them out.
+_COLOR_PRIMARIES = {1: "bt709", 4: "bt470m", 5: "bt470bg", 6: "smpte170m", 7: "smpte240m",
+                    8: "film", 9: "bt2020", 10: "smpte428", 11: "smpte431", 12: "smpte432"}
+_COLOR_TRC = {1: "bt709", 4: "gamma22", 5: "gamma28", 6: "smpte170m", 7: "smpte240m",
+              8: "linear", 13: "iec61966-2-1", 14: "bt2020-10", 15: "bt2020-12",
+              16: "smpte2084", 18: "arib-std-b67"}
+_COLOR_SPACE = {0: "gbr", 1: "bt709", 5: "bt470bg", 6: "smpte170m", 7: "smpte240m",
+                8: "ycgco", 9: "bt2020nc", 10: "bt2020c"}
+_COLOR_RANGE = {1: "tv", 2: "pc"}
+
+
+def _color_fields(cc) -> dict:
+    fields = {}
+    for key, attr, names in (("color_primaries", "color_primaries", _COLOR_PRIMARIES),
+                             ("color_transfer", "color_trc", _COLOR_TRC),
+                             ("color_space", "colorspace", _COLOR_SPACE),
+                             ("color_range", "color_range", _COLOR_RANGE)):
+        try:
+            name = names.get(int(getattr(cc, attr, None)))
+        except (TypeError, ValueError):
+            name = None
+        if name:
+            fields[key] = name
+    return fields
+
+
 def _probe_with_pyav(path: str) -> dict:
     import av
 
@@ -180,6 +208,7 @@ def _probe_with_pyav(path: str) -> dict:
                     width=cc.width, height=cc.height, pix_fmt=cc.pix_fmt or "",
                     r_frame_rate=_rate(s.base_rate or s.guessed_rate),
                     avg_frame_rate=_rate(s.average_rate),
+                    **_color_fields(cc),
                 )
                 if video_entry is None:
                     video_entry = entry
