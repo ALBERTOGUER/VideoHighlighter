@@ -463,6 +463,16 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
         RENDER_MODE = gui_config.get("render_mode", config.get("highlights", {}).get("render_mode", "cpu"))
         if RENDER_MODE not in ("cpu", "gpu"):
             RENDER_MODE = "cpu"
+        # Optional 3D LUT (e.g. the camera maker's log-to-Rec.709 one), applied
+        # while the clips are cut. A bad path logs and is skipped, never fatal.
+        from modules.media.lut import resolve_lut
+        LUT_PATH = resolve_lut(
+            gui_config.get("lut_path", config.get("highlights", {}).get("lut_path")),
+            log=log)
+        # Optional Gyroflow stabilization of the kept segments, before the LUT.
+        from modules.media.stabilize import resolve_settings as _resolve_stab
+        STABILIZATION = _resolve_stab(
+            gui_config.get("stabilization", config.get("highlights", {}).get("stabilization")))
 
         # Transcript settings
         USE_TRANSCRIPT = gui_config.get("use_transcript", False) and TRANSCRIPT_AVAILABLE
@@ -2568,6 +2578,45 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
         _render_mode_label = {"cpu": "CPU re-encode (libx265/264)",
                               "gpu": "GPU re-encode"}[RENDER_MODE]
         log(f"🔹 Step 7: Cutting video segments... [{_render_mode_label}]")
+        if LUT_PATH:
+            log(f"🎨 Color LUT: {os.path.basename(LUT_PATH)}")
+
+        stabilizer = None
+        if STABILIZATION["enabled"] and segments:
+            from modules.media.stabilize import ClipStabilizer, StabilizeError
+            # Gyroflow needs the gyro track, which a time-range trim (an ffmpeg
+            # stream copy) drops — so it always reads the original, offset.
+            stabilizer = ClipStabilizer(
+                STABILIZATION, original_video_path, original_video_duration,
+                offset=RANGE_START if processed_video_path != original_video_path else 0.0,
+                log=log)
+            try:
+                log(f"🎥 Stabilization: Gyroflow, {STABILIZATION['mode']} mode, "
+                    f"{STABILIZATION['output_size']} {STABILIZATION['codec']}")
+                stabilizer.prepare()
+            except StabilizeError as e:
+                log(f"⚠️ Stabilization skipped — {e}")
+                stabilizer.cleanup()
+                stabilizer = None
+
+        def _cut_segment(index, s, e, out_path):
+            """Cut [s, e) into out_path: through Gyroflow first when enabled,
+            the plain cut when it is not — or when Gyroflow fails on this clip."""
+            if stabilizer is not None:
+                try:
+                    stabilized = stabilizer.render(index, s, e)
+                except StabilizeError as err:
+                    log(f"⚠️ Clip {index} not stabilized — {err}")
+                else:
+                    try:
+                        cut_video(stabilized, 0, e - s, out_path,
+                                  mode=RENDER_MODE, lut_path=LUT_PATH)
+                    finally:
+                        os.remove(stabilized)
+                    return
+            cut_video(processed_video_path, s, e, out_path,
+                      mode=RENDER_MODE, lut_path=LUT_PATH)
+
         try:
             from modules.media.clip_export import (
                 clips_directory, sanitize_base_name, segment_clip_path,
@@ -2579,9 +2628,7 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
                 log("⚠️ No segments selected — nothing to cut.")
             elif len(segments) == 1 and not EXPORT_CLIPS:
                 check_cancellation(cancel_flag, log, "video cutting")
-                cut_video(
-                    processed_video_path, segments[0][0], segments[0][1],
-                    OUTPUT_FILE, mode=RENDER_MODE)
+                _cut_segment(1, segments[0][0], segments[0][1], OUTPUT_FILE)
             else:
                 output_dir = os.path.dirname(OUTPUT_FILE) or "."
                 video_base_name = sanitize_base_name(
@@ -2602,7 +2649,7 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
                         clip_path = os.path.join(
                             output_dir, f"{video_base_name}_temp_clip_{i}.mp4")
                     log(f"  Creating clip: {clip_path}")
-                    cut_video(processed_video_path, s, e, clip_path, mode=RENDER_MODE)
+                    _cut_segment(i + 1, s, e, clip_path)
                     if not os.path.exists(clip_path):
                         raise Exception(f"Failed to create clip: {clip_path}")
                     clip_paths.append(clip_path)
@@ -2689,6 +2736,9 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
         except Exception as e:
             log(f"⚠️ Error during cutting/concatenation: {e}")
             raise
+        finally:
+            if stabilizer is not None:
+                stabilizer.cleanup()
 
         # Create matching subtitles for highlight video OR full video
         if CREATE_SUBTITLES and USE_TRANSCRIPT and transcript_segments:

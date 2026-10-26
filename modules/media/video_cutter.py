@@ -1,11 +1,12 @@
 import os
 import subprocess
 
+from modules.media.lut import lut_filter
 from modules.system.app_paths import ffmpeg_exe
 from modules.system.encoder_select import encoder_chain
 
 
-def cut_video(video_path, start_time, end_time, output_path, mode="gpu"):
+def cut_video(video_path, start_time, end_time, output_path, mode="gpu", lut_path=None):
     """Cut [start_time, end_time] out of video_path into output_path.
 
     `mode`:
@@ -13,9 +14,18 @@ def cut_video(video_path, start_time, end_time, output_path, mode="gpu"):
       - "gpu" (default): re-encode with the fastest hardware encoder, CPU
         fallback. Fast, but hardware HEVC may not play in some VR players.
 
+    `lut_path`: optional 3D LUT (.cube…) applied before the pixel format
+    conversion, so a log-profile source is graded at its full bit depth.
+
     Pixel format is normalized to yuv420p so 10-bit VR sources don't break the
     encoders."""
     duration = end_time - start_time
+    # normalize (VR is often 10-bit). setpts: after a fast seek the first frame
+    # can land one frame past zero and be dropped, which the stream-copy concat
+    # of the reel then shows as a one-frame gap at every join.
+    vf = "format=yuv420p,setpts=PTS-STARTPTS"
+    if lut_path:
+        vf = f"{lut_filter(lut_path)},{vf}"
     last_err = "unknown error"
     for enc, vargs in encoder_chain(video_path, mode=mode):
         cmd = [
@@ -26,7 +36,7 @@ def cut_video(video_path, start_time, end_time, output_path, mode="gpu"):
             "-fflags", "+genpts",
             "-map", "0:v:0",
             "-map", "0:a:0?",
-            "-vf", "format=yuv420p",  # normalize (VR is often 10-bit)
+            "-vf", vf,
         ] + vargs + [
             "-c:a", "aac",            # re-encode audio
             "-b:a", "128k",

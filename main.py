@@ -2886,6 +2886,32 @@ class VideoHighlighterGUI(QWidget):
         if _rm_idx >= 0:
             self.render_mode_combo.setCurrentIndex(_rm_idx)
         output_layout.addRow("Cut / encode:", self.render_mode_combo)
+
+        # Optional 3D LUT applied as the clips are cut — log footage (D-Log,
+        # S-Log, V-Log…) comes out flat until the maker's LUT maps it to Rec.709.
+        lut_row = QHBoxLayout()
+        self.lut_path_input = QLineEdit(str(highlights_cfg.get("lut_path", "") or ""))
+        self.lut_path_input.setPlaceholderText("None — clips keep the source colors")
+        self.lut_path_input.setToolTip(
+            "Optional 3D LUT (.cube) applied to the highlight and every clip.\n"
+            "Use your camera's log-to-Rec.709 LUT to turn flat log footage\n"
+            "(D-Log, S-Log, V-Log…) into normal color. The source is never changed.")
+        lut_browse_btn = QPushButton("Browse…")
+        lut_browse_btn.clicked.connect(self._browse_lut)
+        lut_clear_btn = QPushButton("Clear")
+        lut_clear_btn.clicked.connect(self.lut_path_input.clear)
+        lut_row.addWidget(self.lut_path_input, 1)
+        lut_row.addWidget(lut_browse_btn)
+        lut_row.addWidget(lut_clear_btn)
+        output_layout.addRow("Color LUT:", lut_row)
+
+        # Gyroflow stabilization of the kept clips, before the LUT.
+        from modules.ui.stabilization_panel import StabilizationPanel
+        stab_box = QGroupBox("Stabilization (Gyroflow)")
+        stab_layout = QVBoxLayout(stab_box)
+        self.stab_panel = StabilizationPanel(highlights_cfg.get("stabilization"))
+        stab_layout.addWidget(self.stab_panel)
+        output_layout.addRow(stab_box)
         output_box.setLayout(output_layout)
         advanced_layout.addWidget(output_box, 0, 0)
 
@@ -4204,6 +4230,8 @@ class VideoHighlighterGUI(QWidget):
             "keep_temp": self.keep_temp_chk.isChecked(),
             "export_separate_clips": self.export_clips_chk.isChecked(),
             "render_mode": self.render_mode_combo.currentData(),
+            "lut_path": self.lut_path_input.text().strip(),
+            "stabilization": self.stab_panel.settings(),
             "highlight_objects": highlight_objects,
             "interesting_actions": interesting_actions,
             "actions_require_objects": self.actions_require_objects_chk.isChecked(),
@@ -4583,6 +4611,10 @@ class VideoHighlighterGUI(QWidget):
             self.export_clips_chk.setText(
                 "Export clips: ON" if self.export_clips_chk.isChecked() else "Export clips: OFF")
         self._set_combo_data(self.render_mode_combo, get("highlights", "render_mode") if has("highlights", "render_mode") else None)
+        if has("highlights", "lut_path"):
+            self.lut_path_input.setText(str(get("highlights", "lut_path") or ""))
+        if has("highlights", "stabilization"):
+            self.stab_panel.set_settings(get("highlights", "stabilization"))
         if has("highlights", "use_time_range"):
             self.use_time_range_chk.setChecked(bool(get("highlights", "use_time_range")))
         if has("highlights", "range_start_pct"):
@@ -4771,6 +4803,8 @@ class VideoHighlighterGUI(QWidget):
                 "keep_temp": self.keep_temp_chk.isChecked(),
                 "export_separate_clips": self.export_clips_chk.isChecked(),
                 "render_mode": self.render_mode_combo.currentData(),
+                "lut_path": self.lut_path_input.text().strip(),
+                "stabilization": self.stab_panel.settings(),
                 "auto_min_clip": int(self.spin_auto_min_clip.value()),
                 "auto_max_clip": int(self.spin_auto_max_clip.value()),
                 "auto_merge_gap": int(self.spin_auto_merge_gap.value()),
@@ -5534,7 +5568,18 @@ class VideoHighlighterGUI(QWidget):
         if self.worker and self.worker.isRunning():
             self.append_log("⚠️ Pipeline already running!")
             return
-        
+
+        # Stabilization settings asked per run, when the user wants that. A
+        # report-only pass renders nothing, so there is nothing to ask.
+        if not report_only and self.stab_panel.settings()["ask"]:
+            from modules.ui.stabilization_panel import StabilizationDialog
+            dialog = StabilizationDialog(self.stab_panel.settings(), self)
+            if dialog.exec() != QDialog.Accepted:
+                self.append_log("Run cancelled.")
+                return
+            self.stab_panel.set_settings(dialog.settings())
+            self.save_config()
+
         # --- Validate scoring points ---
         scene_points = int(self.spin_scene_points.value())
         motion_event_points = int(self.spin_motion_event_points.value())
@@ -5646,6 +5691,8 @@ class VideoHighlighterGUI(QWidget):
             "keep_temp": self.keep_temp_chk.isChecked(),
             "export_separate_clips": self.export_clips_chk.isChecked(),
             "render_mode": self.render_mode_combo.currentData(),
+            "lut_path": self.lut_path_input.text().strip(),
+            "stabilization": self.stab_panel.settings(),
             "output_file": output_file,
             "output_base": output_base,
             "output_multiple": output_multiple,
@@ -6455,6 +6502,15 @@ class VideoHighlighterGUI(QWidget):
         if not entry:
             return ("ollama", "llama3")
         return (entry["backend"], entry["model"])
+
+    def _browse_lut(self):
+        from modules.media.lut import LUT_SUFFIXES
+        start = os.path.dirname(self.lut_path_input.text().strip())
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose a color LUT", start,
+            f"3D LUTs ({' '.join('*' + s for s in LUT_SUFFIXES)});;All files (*)")
+        if path:
+            self.lut_path_input.setText(path)
 
     def _report_config(self):
         """What the run needs to write the report the way this window is set up.
