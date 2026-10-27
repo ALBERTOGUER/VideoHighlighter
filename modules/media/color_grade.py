@@ -225,3 +225,47 @@ def preview(video, s, at=None, width=480) -> np.ndarray:
     graded = _with_lut(frame, effective_lut(s, log=lambda *_: None))
     gap = np.ones((before.shape[0], 8, 3))
     return (np.concatenate([before, gap, graded], axis=1) * 255).round().astype(np.uint8)
+
+
+# ── which LUT the footage needs ─────────────────────────────────────────────
+
+def _user_profiles_dir():
+    return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                        "dronereel", "profiles")
+
+
+def detect(video) -> dict:
+    """DroneReel's verdict on ``video``: ``{"camera", "profile", "lut", "message"}``.
+
+    Strict as DroneReel is: a LUT only for a profile confirmed by a verified
+    rule (e.g. the Osmo Nano's own colour-mode metadata), ``lut`` None for a
+    non-log profile, and a message naming what is missing otherwise."""
+    from dronereel import profiles
+    from dronereel.media import probe_media
+    cameras = profiles.load_cameras(_user_profiles_dir())
+    decision = profiles.decide(probe_media(video), cameras)
+    out = {"camera": decision.camera, "profile": decision.profile, "lut": None,
+           "log": False, "message": ""}
+    if not decision.confirmed:
+        hint = f" ({'; '.join(decision.hints)})" if decision.hints else ""
+        out["message"] = f"Camera or colour profile not confirmed — colours kept as recorded{hint}."
+        return out
+    cam = cameras[decision.camera]
+    prof = cam.profile(decision.profile)
+    if not prof.is_log:
+        out["message"] = f"{cam.name}, {prof.name}: already Rec.709, no LUT needed."
+        return out
+    out["log"] = True
+    source = prof.settings.get("lut")
+    if source:
+        source = os.path.expanduser(str(source))
+        if not os.path.isabs(source):
+            source = os.path.join(os.path.dirname(cam.source), source)
+    if source and os.path.isfile(source):
+        out["lut"] = os.path.abspath(source)
+        out["message"] = f"{cam.name}, {prof.name} → {os.path.basename(source)}."
+    else:
+        out["message"] = (f"{cam.name}, {prof.name}: needs DJI's official LUT. Choose it "
+                          f"with Browse, or set 'lut:' in {_user_profiles_dir()}/"
+                          f"{cam.camera}.yaml so it is found next time.")
+    return out

@@ -148,6 +148,12 @@ def rule_matches(rule: dict, media: MediaInfo) -> bool:
             value = media.tags.get(str(tag).lower())
             if value is None or not re.search(str(pattern), str(value)):
                 return False
+    if rule.get("dji_color_mode") is not None:
+        stated = True
+        wanted = rule["dji_color_mode"]
+        wanted = {int(v) for v in (wanted if isinstance(wanted, (list, tuple)) else [wanted])}
+        if media.dji_color_mode not in wanted:
+            return False
     if rule.get("min_bit_depth"):
         stated = True
         if media.bit_depth < int(rule["min_bit_depth"]):
@@ -161,6 +167,10 @@ def _evidence(media: MediaInfo) -> list:
         f"color_transfer={media.color_transfer} color_primaries={media.color_primaries} "
         f"color_space={media.color_space}",
     ]
+    if media.dji_color_mode is not None:
+        from dronereel.dji_meta import COLOR_MODES
+        out.append(f"metadatos DJI: color_mode={media.dji_color_mode} "
+                   f"({COLOR_MODES.get(media.dji_color_mode, 'desconocido')})")
     if media.srt_path:
         modes = ", ".join(media.srt_color_modes) or "(sin color_md)"
         out.append(f"SRT {os.path.basename(media.srt_path)}: color_md {modes}")

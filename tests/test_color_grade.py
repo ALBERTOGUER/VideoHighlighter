@@ -172,3 +172,80 @@ def test_color_panel_needs_a_video_to_recommend(qapp):
     panel.recommend()
     assert "Add a video first" in panel.status.text()
     assert panel.dialog_kwargs["video_provider"]() is None
+
+
+# ── detecting the camera and the LUT it needs ───────────────────────────────
+
+NANO_YAML = """camera: osmo_nano
+name: DJI Osmo Nano
+identify: {verified: true, tags: {encoder: '^DJI Osmo Nano$'}}
+color_profiles:
+  normal: {transform: none}
+  dlog_m:
+    transform: lut
+    lut: LUTFILE
+    identify: {verified: true, dji_color_mode: [19]}
+"""
+
+
+@pytest.fixture
+def nano(tmp_path, monkeypatch, identity_lut):
+    """A user profile folder with the Nano's YAML, and a probe that reports
+    ``state["mode"]`` as the clip's DJI colour mode."""
+    import dataclasses
+    from dronereel import media as dm
+    from dronereel.media import MediaInfo
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    state = {"mode": 19, "lut": "../base.cube"}
+
+    def write():
+        (profiles_dir / "osmo_nano.yaml").write_text(NANO_YAML.replace("LUTFILE", state["lut"]))
+
+    def probe(path):
+        return MediaInfo(path=path, duration=10, width=3840, height=2880, fps=29.97,
+                         fps_fraction="30000/1001", video_codec="hevc", pix_fmt="yuv420p10le",
+                         bit_depth=10, color_primaries="bt709", color_transfer="bt709",
+                         color_space="bt709", color_range="tv", rotation=90, has_audio=True,
+                         audio_codec="aac", tags={"encoder": "DJI Osmo Nano"},
+                         dji_color_mode=state["mode"])
+
+    monkeypatch.setattr(dm, "probe_media", probe)
+    monkeypatch.setattr(cg, "_user_profiles_dir", lambda: str(profiles_dir))
+    state["write"] = write
+    write()
+    return state
+
+
+def test_detect_finds_the_nano_dlog_m_lut_relative_to_its_yaml(nano, identity_lut):
+    out = cg.detect("/v/DJI_0032_D.MP4")
+    assert (out["camera"], out["profile"], out["log"]) == ("osmo_nano", "dlog_m", True)
+    assert os.path.samefile(out["lut"], identity_lut)
+    assert "DJI Osmo Nano, dlog_m" in out["message"]
+
+
+def test_detect_normal_colour_needs_no_lut(nano):
+    nano["mode"] = 0
+    out = cg.detect("/v/a.mp4")
+    assert out["lut"] is None and not out["log"]
+    assert "not confirmed" in out["message"]          # mode 0 is not a verified rule
+
+
+def test_detect_says_which_lut_is_missing(nano):
+    nano["lut"] = "missing.cube"
+    nano["write"]()
+    out = cg.detect("/v/a.mp4")
+    assert out["lut"] is None and out["log"]
+    assert "needs DJI's official LUT" in out["message"] and "osmo_nano.yaml" in out["message"]
+
+
+def test_panel_clears_a_log_lut_for_footage_already_in_rec709(qapp, identity_lut):
+    from modules.ui.color_panel import ColorPanel
+    panel = ColorPanel({"lut_path": identity_lut})
+    panel._detected({"camera": "avata2", "profile": "normal", "lut": None, "log": False,
+                     "message": "DJI Avata 2, normal: already Rec.709, no LUT needed."})
+    assert panel.settings()["lut_path"] == ""
+    assert "cleared" in panel.status.text()
+    panel._detected({"camera": "osmo_nano", "profile": "dlog_m", "lut": identity_lut,
+                     "log": True, "message": "ok"})
+    assert panel.settings()["lut_path"] == identity_lut

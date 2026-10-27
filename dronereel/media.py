@@ -49,6 +49,7 @@ class MediaInfo:
     tags: dict = field(default_factory=dict)   # format tags, then video-stream tags
     srt_path: Optional[str] = None
     srt_color_modes: list = field(default_factory=list)
+    dji_color_mode: Optional[int] = None        # DJI's own colour-mode enum, see dji_meta
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -110,6 +111,10 @@ def probe_media(path: str) -> MediaInfo:
         duration = 0.0
 
     srt = find_sidecar_srt(path)
+    dji_mode = None
+    if any(s.get("codec_type") == "data" for s in streams):
+        from dronereel.dji_meta import color_mode
+        dji_mode = color_mode(path)
     return MediaInfo(
         path=os.path.abspath(path),
         duration=duration,
@@ -130,4 +135,5 @@ def probe_media(path: str) -> MediaInfo:
         tags=tags,
         srt_path=srt,
         srt_color_modes=srt_color_modes(srt) if srt else [],
+        dji_color_mode=dji_mode,
     )

@@ -37,15 +37,24 @@ def builtin():
 def test_builtin_cameras_load_with_their_own_profiles(builtin):
     assert set(builtin) >= {"avata2", "osmo_nano"}
     assert set(builtin["avata2"].color_profiles) == {"normal", "dlog_m"}
-    # The Osmo Nano does not inherit the Avata 2's log profile.
-    assert "dlog_m" not in builtin["osmo_nano"].color_profiles
+    # The Osmo Nano has its own D-Log M, never the Avata 2's: its own rule, and
+    # no LUT shipped (each camera's official LUT is configured per camera).
+    nano = builtin["osmo_nano"].color_profiles
+    assert set(nano) == {"normal", "dlog_m"}
+    assert nano["dlog_m"].identify["dji_color_mode"] == [19]
+    assert nano["dlog_m"].settings.get("lut") is None
 
 
-def test_builtin_rules_start_unverified(builtin):
-    for cam in builtin.values():
-        assert not cam.identify.get("verified")
-        for prof in cam.color_profiles.values():
-            assert not prof.identify.get("verified")
+def test_only_rules_checked_on_real_clips_are_verified(builtin):
+    # Avata 2: no real clips yet, so nothing it says is acted on.
+    avata = builtin["avata2"]
+    assert not avata.identify.get("verified")
+    assert not any(p.identify.get("verified") for p in avata.color_profiles.values())
+    # Osmo Nano: checked on three real clips (encoder tag, colour mode 19).
+    nano = builtin["osmo_nano"]
+    assert nano.identify.get("verified") and nano.identify["tags"]["encoder"]
+    assert nano.color_profiles["dlog_m"].identify.get("verified")
+    assert not nano.color_profiles["normal"].identify
 
 
 def test_no_evidence_means_unknown_and_no_colour(builtin):
@@ -76,9 +85,12 @@ def test_profile_without_camera_is_refused(builtin):
         decide(media(), builtin, profile="dlog_m")
 
 
-def test_profile_is_never_borrowed_from_another_camera(builtin):
-    with pytest.raises(ProfileError):
-        decide(media(), builtin, camera="osmo_nano", profile="dlog_m")
+def test_profile_is_never_borrowed_from_another_camera(tmp_path):
+    (tmp_path / "logcam.yaml").write_text(
+        "camera: logcam\ncolor_profiles:\n  dlog:\n    transform: lut\n")
+    cams = load_cameras(str(tmp_path))
+    with pytest.raises(ProfileError):                 # D-Log exists, but not on the Nano
+        decide(media(), cams, camera="osmo_nano", profile="dlog")
 
 
 def test_unknown_camera_is_refused(builtin):

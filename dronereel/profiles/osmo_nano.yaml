@@ -1,25 +1,42 @@
 # DJI Osmo Nano — configuración de cámara para DroneReel-AI.
 #
-# ESTADO: SIN VERIFICAR CON CLIPS REALES. No sé con certeza qué perfiles de
-# color ofrece esta cámara, así que de momento solo está "normal" (sin
-# transformación). Un perfil logarítmico se añadirá aquí, con la LUT oficial
-# de DJI para ESTA cámara, cuando se confirme con tus archivos. Nunca se
-# reutiliza la LUT del Avata 2.
+# ESTADO: verificado con tres clips reales (firmware 10.00.05.36, 4K 4:3 a
+# 29.97 fps, HEVC 10 bits). La cámara se reconoce por la etiqueta del
+# contenedor y el perfil por el modo de color que la propia cámara escribe en
+# su pista de metadatos (djmd, dvtm_ow001): 19 = D-Log M en el enum de DJI.
+# Un clip en color normal no da 19, así que nunca recibe la LUT.
+#
+# La LUT oficial "Osmo Nano D-Log M to Rec.709" (dji.com) no se incluye: es un
+# archivo de DJI. Pon su ruta en `lut:` de una copia de este YAML en
+# ~/.config/dronereel/profiles/ (tiene prioridad sobre este) o pásala con --lut.
+# Nunca se reutiliza la LUT del Avata 2.
 
 camera: osmo_nano
 name: DJI Osmo Nano
 
 identify:
-  verified: false
-  tags: {}
+  verified: true          # comprobado con DJI_…_0032/0034/0037_D.MP4
+  tags:
+    encoder: '^DJI Osmo Nano$'
 
 color_profiles:
   normal:
-    transform: none
+    transform: none       # ya está en Rec.709: no se toca el color
+
+  dlog_m:
+    transform: lut
+    # LUT oficial de DJI "Osmo Nano D-Log M to Rec.709" (descarga de dji.com).
+    # Ruta al archivo .cube (relativa = desde este YAML); vacía = no se puede
+    # aplicar color: exportar con este perfil dará error salvo con --no-color.
+    lut: null
+    output: rec709
+    identify:
+      verified: true      # color_mode 19 en los tres clips de prueba
+      dji_color_mode: [19]
 
 recording:
-  resolutions: []
-  fps: []
+  resolutions: [3840x2880]
+  fps: [29.97]
 
 color:
   exposure_ev: 0.0

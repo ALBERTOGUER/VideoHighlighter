@@ -220,10 +220,13 @@ def test_log_profile_without_lut_is_an_error(patches, tmp_path):
 
 
 def test_osmo_nano_never_gets_the_avata_lut(patches, tmp_path):
+    # The Avata 2 has its LUT configured; the Nano's own D-Log M has none, so
+    # colouring Nano footage fails for want of *its* LUT — never borrows the Avata's.
     media = probe_media(patches["video"])
     cams = profiles.load_cameras(cameras_with(tmp_path, str(tmp_path / "x.cube")))
-    with pytest.raises(profiles.ProfileError):
-        profiles.decide(media, cams, camera="osmo_nano", profile="dlog_m")
+    dlog = profiles.decide(media, cams, camera="osmo_nano", profile="dlog_m")
+    with pytest.raises(C.ColorError, match="LUT oficial"):
+        C.plan(media, dlog, cams["osmo_nano"], C.ColorSettings(), cache_dir=str(tmp_path / "l"))
 
 
 # ---------------------------------------------------------------- end to end

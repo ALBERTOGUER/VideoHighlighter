@@ -84,6 +84,13 @@ class ColorPanel(QWidget):
             form.addRow(f"{label}:", slider)
 
         buttons = QHBoxLayout()
+        self.detect_btn = QPushButton("Detect camera")
+        self.detect_btn.setToolTip(
+            "Read the first video's metadata: which camera and colour profile it was\n"
+            "recorded in, and the LUT that profile needs (DroneReel's camera profiles).\n"
+            "A LUT is only set when the profile is confirmed.")
+        self.detect_btn.clicked.connect(self.detect)
+        buttons.addWidget(self.detect_btn)
         self.recommend_btn = QPushButton("Recommend")
         self.recommend_btn.setToolTip(
             "Measure frames of the first video (after the LUT) and suggest values.\n"
@@ -155,8 +162,8 @@ class ColorPanel(QWidget):
         if self._busy:
             return
         self._busy = True
-        self.recommend_btn.setEnabled(False)
-        self.preview_btn.setEnabled(False)
+        for b in (self.detect_btn, self.recommend_btn, self.preview_btn):
+            b.setEnabled(False)
         self.status.setText(f"{what} {os.path.basename(video)}…")
         self._job = _Job(lambda: fn(video), self)
         self._job.done.connect(on_done)
@@ -166,11 +173,23 @@ class ColorPanel(QWidget):
 
     def _job_finished(self):
         self._busy = False
-        self.recommend_btn.setEnabled(True)
-        self.preview_btn.setEnabled(True)
+        for b in (self.detect_btn, self.recommend_btn, self.preview_btn):
+            b.setEnabled(True)
         then, self._then = self._then, None
         if then:
             then()
+
+    def detect(self):
+        self._start("Reading", cg.detect, self._detected)
+
+    def _detected(self, result):
+        if result["lut"]:
+            self.lut_input.setText(result["lut"])
+        elif result["profile"] != "unknown" and not result["log"] and self.lut_input.text():
+            # A log-to-Rec.709 LUT on footage already in Rec.709 crushes it.
+            self.lut_input.clear()
+            result["message"] += " The LUT was cleared."
+        self.status.setText(result["message"])
 
     def recommend(self):
         current = self.settings()
