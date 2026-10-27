@@ -205,9 +205,11 @@ def frame_curve(t, v, start, end, settings):
 
 # ── Gyroflow presets and output parameters ──────────────────────────────────
 
-def build_preset(smoothness, lpf_hz=None, curve=None, trim=None) -> dict:
+def build_preset(smoothness, lpf_hz=None, curve=None, trim=None, centre=None) -> dict:
     """A Gyroflow preset. ``curve`` = [(source time s, smoothness)] keyframes,
-    ``trim`` = (start, end) as fractions of the source duration."""
+    ``centre`` = [(source time s, ZoomingCenterX)] keyframes (where the
+    output window looks, see ``modules.media.framing``), ``trim`` = (start,
+    end) as fractions of the source duration."""
     preset = {
         "version": 2,
         "stabilization": {
@@ -216,11 +218,14 @@ def build_preset(smoothness, lpf_hz=None, curve=None, trim=None) -> dict:
         },
         "gyro_source": {"lpf": float(lpf_hz) if lpf_hz else 0.0},
     }
-    if curve:
-        preset["keyframes"] = {"SmoothingParamSmoothness": {
-            str(int(round(ts * 1_000_000))): {"value": float(val), "easing": KEYFRAME_EASING}
-            for ts, val in curve
-        }}
+    keyframes = {}
+    for name, points in (("SmoothingParamSmoothness", curve), ("ZoomingCenterX", centre)):
+        if points:
+            keyframes[name] = {
+                str(int(round(ts * 1_000_000))): {"value": float(val), "easing": KEYFRAME_EASING}
+                for ts, val in points}
+    if keyframes:
+        preset["keyframes"] = keyframes
     if trim:
         preset["trim_start"], preset["trim_end"] = float(trim[0]), float(trim[1])
     return preset
@@ -324,8 +329,9 @@ class ClipStabilizer:
         curve = frame_curve(self.t, self.v, start, end, s) if s["mode"] == "auto_frame" else None
         return smooth, lpf, curve, reason
 
-    def render(self, index, start, end):
-        """Stabilized file for processed-video seconds [start, end)."""
+    def render(self, index, start, end, centre=None):
+        """Stabilized file for processed-video seconds [start, end).
+        ``centre`` = [(seconds from start, ZoomingCenterX)] steers the window."""
         a, b = start + self.offset, end + self.offset
         smooth, lpf, curve, reason = self.plan(a, b)
         detail = (f"smoothness {min(v for _, v in curve):.2f}–{max(v for _, v in curve):.2f} "
@@ -335,7 +341,8 @@ class ClipStabilizer:
         preset_path = os.path.join(self.workdir, f"clip_{index:02d}.gyroflow")
         with open(preset_path, "w", encoding="utf-8") as f:
             json.dump(build_preset(smooth, lpf, curve,
-                                   (a / self.duration, min(1.0, b / self.duration))), f)
+                                   (a / self.duration, min(1.0, b / self.duration)),
+                                   centre=[(a + t, v) for t, v in centre] if centre else None), f)
         ext = ".mov" if self.s["codec"] == "ProRes" else ".mp4"
         name = f"clip_{index:02d}_stabilized{ext}"
         out = os.path.join(self.workdir, name)

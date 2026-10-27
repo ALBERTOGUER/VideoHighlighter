@@ -2913,6 +2913,14 @@ class VideoHighlighterGUI(QWidget):
         self.stab_panel = StabilizationPanel(highlights_cfg.get("stabilization"))
         stab_layout.addWidget(self.stab_panel)
         output_layout.addRow(stab_box)
+
+        # Where the stabilized window looks: DroneReel's path, steered in Gyroflow.
+        from modules.ui.framing_panel import FramingPanel
+        framing_box = QGroupBox("Framing (Gyroflow window)")
+        framing_layout = QVBoxLayout(framing_box)
+        self.framing_panel = FramingPanel(highlights_cfg.get("framing"))
+        framing_layout.addWidget(self.framing_panel)
+        output_layout.addRow(framing_box)
         output_box.setLayout(output_layout)
         advanced_layout.addWidget(output_box, 0, 0)
 
@@ -4235,6 +4243,7 @@ class VideoHighlighterGUI(QWidget):
             "color": self.color_panel.settings(),
             "stabilization": self.stab_panel.settings(),
             "delivery": self.delivery_panel.settings(),
+            "framing": self.framing_panel.settings(),
             "highlight_objects": highlight_objects,
             "interesting_actions": interesting_actions,
             "actions_require_objects": self.actions_require_objects_chk.isChecked(),
@@ -4623,6 +4632,8 @@ class VideoHighlighterGUI(QWidget):
             self.stab_panel.set_settings(get("highlights", "stabilization"))
         if has("highlights", "delivery"):
             self.delivery_panel.set_settings(get("highlights", "delivery"))
+        if has("highlights", "framing"):
+            self.framing_panel.set_settings(get("highlights", "framing"))
         if has("highlights", "use_time_range"):
             self.use_time_range_chk.setChecked(bool(get("highlights", "use_time_range")))
         if has("highlights", "range_start_pct"):
@@ -4815,6 +4826,7 @@ class VideoHighlighterGUI(QWidget):
                 "color": self.color_panel.settings(),
                 "stabilization": self.stab_panel.settings(),
                 "delivery": self.delivery_panel.settings(),
+                "framing": self.framing_panel.settings(),
                 "auto_min_clip": int(self.spin_auto_min_clip.value()),
                 "auto_max_clip": int(self.spin_auto_max_clip.value()),
                 "auto_merge_gap": int(self.spin_auto_merge_gap.value()),
@@ -5700,6 +5712,7 @@ class VideoHighlighterGUI(QWidget):
             "color": self.color_panel.settings(),
             "stabilization": self.stab_panel.settings(),
             "delivery": self.delivery_panel.settings(),
+            "framing": self.framing_panel.settings(),
             "output_file": output_file,
             "output_base": output_base,
             "output_multiple": output_multiple,
@@ -6516,6 +6529,7 @@ class VideoHighlighterGUI(QWidget):
             ("delivery", "Delivery", self.delivery_panel),
             ("color", "Color", self.color_panel),
             ("stabilization", "Stabilization (Gyroflow)", self.stab_panel),
+            ("framing", "Framing", self.framing_panel),
         )
 
     def _ask_before_run(self) -> bool:

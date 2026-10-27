@@ -491,6 +491,10 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
         )
         DELIVERY = _resolve_delivery(
             gui_config.get("delivery", config.get("highlights", {}).get("delivery")))
+        # Where the 9:16 window looks — DroneReel's path, steered in Gyroflow.
+        from modules.media import framing as _framing
+        FRAMING = _framing.resolve_settings(
+            gui_config.get("framing", config.get("highlights", {}).get("framing")))
 
         # Transcript settings
         USE_TRANSCRIPT = gui_config.get("use_transcript", False) and TRANSCRIPT_AVAILABLE
@@ -2616,13 +2620,25 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
                 log(f"⚠️ Stabilization skipped — {e}")
                 stabilizer.cleanup()
                 stabilizer = None
+        if _framing.active(FRAMING) and stabilizer is None:
+            log("⚠️ Framing needs stabilization (Gyroflow does the 9:16 crop) — clips keep "
+                "the full picture")
 
         def _cut_segment(index, s, e, out_path):
             """Cut [s, e) into out_path: through Gyroflow first when enabled,
             the plain cut when it is not — or when Gyroflow fails on this clip."""
             if stabilizer is not None:
+                centre = None
+                if _framing.active(FRAMING):
+                    try:
+                        centre = _framing.center_curve(processed_video_path, s, e, FRAMING)
+                        shift = max(abs(v) for _, v in centre) / _framing.OFFSET_PER_WIDTH
+                        log(f"  🎯 Framing clip {index}: {FRAMING['mode']}, up to "
+                            f"{shift * 100:.0f}% of the width off centre")
+                    except Exception as err:
+                        log(f"⚠️ Clip {index} framed at the centre — {err}")
                 try:
-                    stabilized = stabilizer.render(index, s, e)
+                    stabilized = stabilizer.render(index, s, e, centre=centre)
                 except StabilizeError as err:
                     log(f"⚠️ Clip {index} not stabilized — {err}")
                 else:
