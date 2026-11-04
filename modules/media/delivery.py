@@ -70,8 +70,10 @@ def _model(use_model):
 
 
 def best_segment(video_path, settings, log=print):
-    """``(start, end, description)`` of the best continuous segment of
-    ``video_path``, in its own seconds. Raises when nothing can be chosen."""
+    """``(start, end, description, selection)`` of the best continuous
+    segment of ``video_path``, in its own seconds; ``selection`` is
+    DroneReel's record of the choice and its alternatives, what a rating of
+    the segment learns from. Raises when nothing can be chosen."""
     from dronereel import analyze as an
     from dronereel import selector as sel
     from dronereel.media import probe_media
@@ -96,7 +98,10 @@ def best_segment(video_path, settings, log=print):
     for warning in selection.warnings:
         log(f"   ⚠️ {warning}")
     choice = selection.best
-    return choice.start, choice.end, f"score {choice.score:.2f}, {why}"
+    record = sel.log_record(selection, analysis, media.path,
+                            an.content_key(media.path, analysis.fps, analysis.width))
+    record["model"] = model.trained if model is not None else None
+    return choice.start, choice.end, f"score {choice.score:.2f}, {why}", record
 
 
 def segment_path(output_file, start, end) -> str:

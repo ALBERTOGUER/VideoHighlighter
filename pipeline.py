@@ -2664,7 +2664,8 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
                 check_cancellation(cancel_flag, log, "best segment")
                 log("🎬 Best continuous segment (DroneReel)...")
                 try:
-                    best_s, best_e, why = best_segment(processed_video_path, DELIVERY, log)
+                    best_s, best_e, why, best_choice = best_segment(
+                        processed_video_path, DELIVERY, log)
                 except Exception as err:
                     log(f"⚠️ No best segment — {err}")
                 else:
@@ -2672,6 +2673,18 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
                     log(f"   {best_s:.1f}–{best_e:.1f}s ({best_e - best_s:.1f}s, {why})")
                     _cut_segment(0, best_s, best_e, best_path)
                     log(f"✅ Best segment saved: {best_path}")
+                    # Beside it, what the Taste tab rates it from.
+                    log("   Recording it for the Taste tab (fingerprinting the original)...")
+                    try:
+                        from modules.media.taste import segment_record, write_record
+                        trimmed = processed_video_path != original_video_path
+                        write_record(segment_record(
+                            best_choice, best_path, original_video_path,
+                            offset=RANGE_START if trimmed else 0.0,
+                            analysis_video=processed_video_path, lut=LUT_PATH))
+                        print(f"[taste] record written beside {best_path}")
+                    except Exception as err:
+                        log(f"⚠️ Best segment cannot be rated in the Taste tab — {err}")
 
             if wants_reel(DELIVERY):
                 if len(segments) == 0:

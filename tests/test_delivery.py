@@ -87,7 +87,7 @@ def test_best_segment_passes_the_settings_to_dronereel(monkeypatch, ranker):
     def fake_analyze(media, progress=None):
         for f in (0.05, 0.5, 1.0):
             progress(f)
-        return "analysis"
+        return types.SimpleNamespace(fps=5.0, width=480)
 
     def fake_select(analysis, cfg, model):
         seen.update(cfg=cfg, model=model)
@@ -95,13 +95,17 @@ def test_best_segment_passes_the_settings_to_dronereel(monkeypatch, ranker):
         return types.SimpleNamespace(best=best, warnings=["short shot"])
 
     monkeypatch.setattr(an, "analyze", fake_analyze)
+    monkeypatch.setattr(an, "content_key", lambda path, fps, width: "key")
     monkeypatch.setattr(sel, "select", fake_select)
+    monkeypatch.setattr(sel, "log_record", lambda choice, a, video, key: {"video": video,
+                                                                           "key": key})
     lines = []
     s = dl.resolve_settings({"mode": "segment", "min_duration": 12, "max_duration": 0,
                              "pre_roll": 1.5, "post_roll": 3})
-    start, end, why = dl.best_segment("/v/a.mp4", s, log=lines.append)
+    start, end, why, record = dl.best_segment("/v/a.mp4", s, log=lines.append)
 
     assert (start, end) == (12.0, 30.5)
+    assert record == {"video": "/v/a.mp4", "key": "key", "model": None}
     assert why.startswith("score 0.81")
     cfg = seen["cfg"]
     assert (cfg.min_duration, cfg.max_duration, cfg.pre_roll, cfg.post_roll) == (12, None, 1.5, 3)

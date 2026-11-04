@@ -3028,6 +3028,17 @@ class VideoHighlighterGUI(QWidget):
         except Exception as e:
             self.append_log(f"⚠️ Training panel unavailable: {e}")
 
+        # --- Tab: Taste ---
+        # Rating the best segments and training DroneReel's learned taste on
+        # them, which was CLI-only. The segments sit beside the source video.
+        try:
+            from modules.ui.taste_panel import TastePanel
+            self.taste_panel = TastePanel(
+                folder_provider=lambda: os.path.dirname(self._first_video() or ""))
+            tabs.addTab(self._scrollable(self.taste_panel), "Taste")
+        except Exception as e:
+            self.append_log(f"⚠️ Taste panel unavailable: {e}")
+
         # --- Tab 5: Avoid ---
         avoid_tab = QWidget()
         avoid_layout = QVBoxLayout()
