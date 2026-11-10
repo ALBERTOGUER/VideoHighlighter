@@ -3,10 +3,32 @@ import subprocess
 
 from modules.media.lut import lut_filter
 from modules.system.app_paths import ffmpeg_exe
-from modules.system.encoder_select import encoder_chain
+from modules.system.encoder_select import _LIBX264, encoder_chain
+
+# The final encode when the caller names a codec (a stabilized clip: the
+# codec chosen in the Stabilization panel), as (encoder, pixel format, args).
+# HEVC keeps the source's 10 bits and is tagged hvc1, which QuickTime and
+# iPhones need to play it. ProRes is Gyroflow's intermediate only — an .mp4
+# carries HEVC instead. libx264 stays as the last resort, as in encoder_chain.
+_X265_10BIT = ("libx265", "yuv420p10le",
+               ["-c:v", "libx265", "-preset", "fast", "-crf", "18", "-tag:v", "hvc1",
+                "-x265-params", "log-level=error"])
+FINAL_ENCODERS = {
+    "H.265/HEVC": [_X265_10BIT],
+    "ProRes": [_X265_10BIT],
+    "H.264/AVC": [],
+}
 
 
-def cut_video(video_path, start_time, end_time, output_path, mode="gpu", lut_path=None):
+def encoders_for(video_path, mode, codec=None):
+    """``[(encoder, pixel format, args)]`` to try in order."""
+    if codec is None:
+        return [(enc, "yuv420p", vargs) for enc, vargs in encoder_chain(video_path, mode=mode)]
+    return FINAL_ENCODERS.get(codec, []) + [(_LIBX264[0], "yuv420p", _LIBX264[1])]
+
+
+def cut_video(video_path, start_time, end_time, output_path, mode="gpu", lut_path=None,
+              codec=None):
     """Cut [start_time, end_time] out of video_path into output_path.
 
     `mode`:
@@ -17,17 +39,20 @@ def cut_video(video_path, start_time, end_time, output_path, mode="gpu", lut_pat
     `lut_path`: optional 3D LUT (.cube…) applied before the pixel format
     conversion, so a log-profile source is graded at its full bit depth.
 
+    `codec`: a name from the Stabilization panel ("H.265/HEVC"…) to encode
+    with instead of the automatic choice above.
+
     Pixel format is normalized to yuv420p so 10-bit VR sources don't break the
     encoders."""
     duration = end_time - start_time
     # normalize (VR is often 10-bit). setpts: after a fast seek the first frame
     # can land one frame past zero and be dropped, which the stream-copy concat
     # of the reel then shows as a one-frame gap at every join.
-    vf = "format=yuv420p,setpts=PTS-STARTPTS"
-    if lut_path:
-        vf = f"{lut_filter(lut_path)},{vf}"
     last_err = "unknown error"
-    for enc, vargs in encoder_chain(video_path, mode=mode):
+    for enc, pix_fmt, vargs in encoders_for(video_path, mode, codec):
+        vf = f"format={pix_fmt},setpts=PTS-STARTPTS"
+        if lut_path:
+            vf = f"{lut_filter(lut_path)},{vf}"
         cmd = [
             ffmpeg_exe(), "-y", "-v", "error",
             "-ss", str(start_time),   # fast seek before decoding

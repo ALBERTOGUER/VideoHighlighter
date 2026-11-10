@@ -332,3 +332,13 @@ def test_panel_shows_the_controls_of_the_chosen_mode(qapp):
     assert not panel.smooth.isVisible() and panel.smooth_min.isVisible() and panel.pan.isVisible()
     panel.mode_buttons["auto_clip"].setChecked(True)
     assert panel.smooth_min.isVisible() and not panel.pan.isVisible()
+
+
+def test_the_reel_of_hevc_clips_is_tagged_hvc1(monkeypatch):
+    import pipeline
+    from modules.media import ffmpeg_tools
+    monkeypatch.setattr(ffmpeg_tools, "probe", lambda p: {"streams": [
+        {"codec_type": "audio", "codec_name": "aac"},
+        {"codec_type": "video", "codec_name": "hevc" if p.endswith("h.mp4") else "h264"}]})
+    assert pipeline._hvc1_tag("/c/h.mp4") == ["-tag:v", "hvc1"]
+    assert pipeline._hvc1_tag("/c/a.mp4") == []

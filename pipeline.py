@@ -91,6 +91,18 @@ def _collapse_runs(items, fmt="{val} ×{n}", sep=", "):
     out.append(fmt.format(val=prev, n=n))
     return sep.join(out)
 
+def _hvc1_tag(clip_path):
+    """``-tag:v hvc1`` for a stream copy of HEVC clips: the mp4 muxer writes
+    hev1 by default, which QuickTime and iPhones refuse to play."""
+    try:
+        from modules.media.ffmpeg_tools import probe
+        streams = probe(clip_path).get("streams") or []
+    except Exception:
+        return []
+    video = next((st for st in streams if st.get("codec_type") == "video"), {})
+    return ["-tag:v", "hvc1"] if video.get("codec_name") == "hevc" else []
+
+
 def subtract_forbidden(segments, forbidden_ranges, min_keep=0.5):
     """Cut forbidden [a,b] ranges out of each (start,end) segment.
     A segment can split into several pieces; slivers under min_keep are dropped."""
@@ -2643,8 +2655,8 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
                     log(f"⚠️ Clip {index} not stabilized — {err}")
                 else:
                     try:
-                        cut_video(stabilized, 0, e - s, out_path,
-                                  mode=RENDER_MODE, lut_path=LUT_PATH)
+                        cut_video(stabilized, 0, e - s, out_path, mode=RENDER_MODE,
+                                  lut_path=LUT_PATH, codec=STABILIZATION["codec"])
                     finally:
                         os.remove(stabilized)
                     return
@@ -2743,7 +2755,7 @@ def run_highlighter(video_path, sample_rate=5, gui_config: dict = None,
                         subprocess.run([
                             ffmpeg_exe(), "-y", "-v", "error", "-f", "concat",
                             "-safe", "0", "-i", concat_file_normalized,
-                            "-c", "copy", OUTPUT_FILE_CLEAN,
+                            "-c", "copy", *_hvc1_tag(clip_paths[0]), OUTPUT_FILE_CLEAN,
                         ], check=True)
                         OUTPUT_FILE = OUTPUT_FILE_CLEAN
 
